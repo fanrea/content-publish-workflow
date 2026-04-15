@@ -1,0 +1,86 @@
+﻿spring:
+  application:
+    name: content-publish-service
+  rabbitmq:
+    # Avoid connecting to RabbitMQ on startup via RabbitAdmin.
+    # This service enables MQ only when the outbox relay is explicitly turned on.
+    dynamic: false
+  profiles:
+    # 通过 profile 打开可选能力：
+    # 1. mysql: 使用 MySQL 数据源（见 application-mysql.yml）
+    # 2. redis: 启用 Redis 缓存与 Redis readiness 检查（见 application-redis.yml）
+    # 3. rabbitmq: 启用 Outbox + RabbitMQ 配置样例（见 application-rabbitmq.yml）
+    # 4. ops: 运维/演示可观测性配置（见 application-ops.yml）
+    # 5. loadtest: 压测/基准测试运行参数（见 application-loadtest.yml）
+    active: ${SPRING_PROFILES_ACTIVE:}
+  datasource:
+    # 默认使用内存 H2，便于本地演示与测试；部署时可通过环境变量覆盖成 MySQL。
+    url: ${DB_URL:jdbc:h2:mem:cpw;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false}
+    driver-class-name: ${DB_DRIVER:org.h2.Driver}
+    username: ${DB_USER:sa}
+    password: ${DB_PASSWORD:}
+  jpa:
+    open-in-view: false
+    defer-datasource-initialization: true
+    hibernate:
+      # 以 schema.sql 为准，避免自动建表把约束“悄悄改掉”。
+      ddl-auto: none
+    properties:
+      hibernate:
+        format_sql: true
+  sql:
+    init:
+      # 默认只初始化嵌入式数据库；生产环境不自动执行建表脚本。
+      mode: embedded
+      schema-locations: classpath:sql/schema.sql
+  cache:
+    type: simple
+
+server:
+  port: 8080
+  # 服务部署在网关或 Ingress 后面时，转发头由框架统一处理。
+  forward-headers-strategy: framework
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # 面向运维的基础端点与 Prometheus 指标端点。
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        # 开启 liveness / readiness 探针，适合容器化环境。
+        enabled: true
+      group:
+        # 默认不要强依赖 Redis 在线，避免本地未启动 Redis 时 readiness 直接失败。
+        readiness:
+          include: ping,db
+        liveness:
+          include: ping
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: content-publish-service
+    mode: backend-api
+    architecture: frontend-backend-separated
+
+workflow:
+  demo:
+    # 本地演示时可切换 true；默认关闭，避免污染开发数据。
+    seedDraft: false
+  scheduler:
+    local:
+      # 默认为本地 @Scheduled 轮询；接入 XXL-Job 后可关闭，改由调度中心触发。
+      enabled: true
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui
+
+

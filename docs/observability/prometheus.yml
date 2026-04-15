@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: content-publish-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      # If you enabled a separate management port (recommended):
+      # - SERVER_PORT=8080
+      # - MANAGEMENT_PORT=8081
+      - targets: ["host.docker.internal:8081"]
+        labels:
+          env: local
+

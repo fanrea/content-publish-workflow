@@ -1,0 +1,68 @@
+# application-example.yml
+#
+# Documentation-only example config for running this service as an independent backend microservice
+# in a frontend-backend separated architecture.
+#
+# Prefer environment variables for secrets.
+#
+
+spring:
+  application:
+    name: content-publish-service
+
+  profiles:
+    # Suggested: mysql,redis
+    active: mysql,redis
+
+  datasource:
+    url: ${DB_URL:jdbc:mysql://127.0.0.1:3306/cpw?useSSL=false&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
+    username: ${DB_USER:root}
+    password: ${DB_PASSWORD:root}
+    driver-class-name: ${DB_DRIVER:com.mysql.cj.jdbc.Driver}
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+
+  sql:
+    init:
+      # In production, do not auto-run schema scripts. Use migrations (Flyway/Liquibase).
+      mode: never
+
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DB:0}
+      timeout: 2s
+
+  cache:
+    type: redis
+
+server:
+  port: ${SERVER_PORT:8080}
+  forward-headers-strategy: framework
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: ping,db,redis
+        liveness:
+          include: ping
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui
+

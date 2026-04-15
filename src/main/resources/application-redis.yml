@@ -1,0 +1,41 @@
+﻿spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DB:0}
+      timeout: 2s
+      lettuce:
+        pool:
+          # 连接池参数：在 QPS 上来后能显著降低频繁建连开销。
+          # 注意：需要 pom.xml 引入 commons-pool2，否则这些配置不会生效。
+          max-active: ${REDIS_POOL_MAX_ACTIVE:16}
+          max-idle: ${REDIS_POOL_MAX_IDLE:16}
+          min-idle: ${REDIS_POOL_MIN_IDLE:0}
+          max-wait: ${REDIS_POOL_MAX_WAIT:2s}
+  cache:
+    # 作为后端服务的缓存层，优先通过 Spring Cache 使用 Redis。
+    type: redis
+    redis:
+      time-to-live: 10m
+      cache-null-values: false
+
+workflow:
+  cache:
+    # 仅作为默认值；也可以通过环境变量覆盖。
+    # keyPrefix 会在 Redis 中形成类似：cpw:cache:cpw:draft:detail:byId:id:123 的最终 key
+    keyPrefix: ${CACHE_PREFIX:cpw:}
+    draftDetailTtl: ${CACHE_DRAFT_DETAIL_TTL:30s}
+    draftListTtl: ${CACHE_DRAFT_LIST_TTL:5s}
+    draftStatusCountTtl: ${CACHE_DRAFT_STATUS_COUNT_TTL:10s}
+
+management:
+  endpoint:
+    health:
+      group:
+        # 开启 redis profile 后，readiness 会把 Redis 作为必须依赖。
+        readiness:
+          include: ping,db,redis
+
+

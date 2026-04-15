@@ -1,0 +1,25 @@
+xxl:
+  job:
+    admin:
+      addresses: ${XXL_JOB_ADMIN_ADDRESSES:http://127.0.0.1:8080/xxl-job-admin}
+      accessToken: ${XXL_JOB_ACCESS_TOKEN:default_token}
+      timeout: ${XXL_JOB_ADMIN_TIMEOUT:3}
+    executor:
+      enabled: true
+      appname: ${XXL_JOB_EXECUTOR_APPNAME:content-publish-workflow}
+      address: ${XXL_JOB_EXECUTOR_ADDRESS:}
+      ip: ${XXL_JOB_EXECUTOR_IP:}
+      port: ${XXL_JOB_EXECUTOR_PORT:9999}
+      logpath: ${XXL_JOB_EXECUTOR_LOG_PATH:./logs/xxl-job/jobhandler}
+      logretentiondays: ${XXL_JOB_EXECUTOR_LOG_RETENTION_DAYS:30}
+
+workflow:
+  scheduler:
+    local:
+      enabled: false
+
+# Suggested admin job registration:
+# 1. workflowPublishTaskPollJob        param optional, cadence e.g. every 5s
+# 2. workflowOutboxRelayJob            param optional, cadence e.g. every 5s
+# 3. workflowDeadPublishTaskScanJob    param = scan limit, e.g. 100
+# 4. workflowDeadOutboxScanJob         param = scan limit, e.g. 100

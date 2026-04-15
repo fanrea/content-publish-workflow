@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!--
+      Logging goals:
+      1) human-readable and grep-friendly
+      2) include correlation ids when available (traceId/spanId/requestId)
+      3) keep default output stable across Windows/Linux
+
+      Note: this repo intentionally does NOT modify Java code to force MDC values.
+      If tracing/request-id is enabled by other components, the placeholders below will show them.
+    -->
+
+    <springProperty scope="context" name="APP_NAME" source="spring.application.name" defaultValue="content-publish-service"/>
+    <property name="LOG_PATTERN"
+              value="%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} level=%-5level app=${APP_NAME} pid=%pid thread=%thread traceId=%X{traceId:-} spanId=%X{spanId:-} requestId=%X{requestId:-} logger=%logger{36} - %msg%n%ex{5}"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+    <!-- Reduce noise for demo/ops readability. -->
+    <springProfile name="ops">
+        <logger name="org.springframework" level="INFO"/>
+        <logger name="org.hibernate" level="WARN"/>
+        <logger name="org.apache.tomcat" level="INFO"/>
+        <logger name="com.contentworkflow" level="INFO"/>
+    </springProfile>
+
+    <springProfile name="loadtest">
+        <logger name="org.springframework" level="WARN"/>
+        <logger name="org.hibernate" level="WARN"/>
+        <logger name="com.contentworkflow" level="INFO"/>
+    </springProfile>
+</configuration>
+

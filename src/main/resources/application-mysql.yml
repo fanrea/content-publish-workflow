@@ -1,0 +1,13 @@
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:mysql://127.0.0.1:3306/cpw?useSSL=false&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
+    driver-class-name: ${DB_DRIVER:com.mysql.cj.jdbc.Driver}
+    username: ${DB_USER:root}
+    password: ${DB_PASSWORD:root}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  sql:
+    init:
+      # For real DBs prefer migrations (Flyway/Liquibase). Keep init off by default.
+      mode: never
