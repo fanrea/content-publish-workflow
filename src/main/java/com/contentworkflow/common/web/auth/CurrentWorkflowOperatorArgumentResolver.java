@@ -1,4 +1,4 @@
-package com.contentworkflow.common.web.auth;
+﻿package com.contentworkflow.common.web.auth;
 
 import com.contentworkflow.common.exception.BusinessException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -41,7 +41,7 @@ public class CurrentWorkflowOperatorArgumentResolver implements HandlerMethodArg
             return operatorIdentity;
         }
 
-        // 兜底：在 standalone 测试或拦截器未注册的场景，仍可从 Header 解析操作人。
+        // Fallback for standalone tests or scenarios where the interceptor is not installed.
         WorkflowOperatorResolver.ResolvedWorkflowAuth auth = operatorResolver.resolveRequired(request);
         request.setAttribute(WorkflowAuthConstants.REQUEST_ROLES_ATTR, auth.roles());
         request.setAttribute(WorkflowAuthConstants.REQUEST_PERMISSIONS_ATTR, auth.permissions());

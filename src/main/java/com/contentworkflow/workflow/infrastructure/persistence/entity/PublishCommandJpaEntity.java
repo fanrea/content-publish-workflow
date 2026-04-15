@@ -1,4 +1,4 @@
-package com.contentworkflow.workflow.infrastructure.persistence.entity;
+﻿package com.contentworkflow.workflow.infrastructure.persistence.entity;
 
 import jakarta.persistence.*;
 import lombok.Getter;
@@ -73,7 +73,7 @@ public class PublishCommandJpaEntity {
 
     @PreUpdate
     public void preUpdate() {
-        // 始终刷新更新时间，便于查询“最新命令状态”以及排查问题。
+        // Always refresh updatedAt so command status changes are ordered correctly.
         updatedAt = LocalDateTime.now();
     }
 }

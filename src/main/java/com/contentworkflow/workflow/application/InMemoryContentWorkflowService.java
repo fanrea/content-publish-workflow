@@ -78,7 +78,7 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         this.store = store;
     }
 
-    @Value("${workflow.demo.seedDraft:true}")
+    @Value("${workflow.demo.seedDraft:false}")
     private boolean seedDraft;
 
     @PostConstruct

@@ -1,4 +1,4 @@
-package com.contentworkflow.workflow.application.store;
+﻿package com.contentworkflow.workflow.application.store;
 
 import com.contentworkflow.common.api.PageResponse;
 import com.contentworkflow.workflow.domain.entity.ContentDraft;
@@ -153,7 +153,7 @@ public class InMemoryWorkflowStore implements WorkflowStore {
         }
         Long draftId = task.getDraftId();
         if (draftId == null) {
-            // 兜底：全表扫描（仅用于 in-memory demo）。
+            // Fallback to a full scan in the in-memory demo store when draftId is absent.
             draftId = tasks.entrySet().stream()
                     .filter(e -> e.getValue().stream().anyMatch(t -> task.getId().equals(t.getId())))
                     .map(Map.Entry::getKey)

@@ -1,4 +1,4 @@
-package com.contentworkflow.common.cache;
+﻿package com.contentworkflow.common.cache;
 
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -21,16 +21,15 @@ import org.springframework.data.redis.serializer.StringRedisSerializer;
 import java.time.Duration;
 
 /**
- * Redis + Spring Cache 统一配置。
- *
- * <p>设计原则：</p>
+ * Redis + Spring Cache 缁熶竴閰嶇疆銆? *
+ * <p>璁捐鍘熷垯锛?/p>
  * <ul>
- *   <li>缓存只是加速层，默认采用 best-effort，Redis 异常不影响主流程。</li>
- *   <li>不同 cacheName 使用不同 TTL，避免一刀切。</li>
- *   <li>统一 JSON 序列化，兼容 LocalDateTime 等 Java 时间类型。</li>
+ *   <li>缂撳瓨鍙槸鍔犻€熷眰锛岄粯璁ら噰鐢?best-effort锛孯edis 寮傚父涓嶅奖鍝嶄富娴佺▼銆?/li>
+ *   <li>涓嶅悓 cacheName 浣跨敤涓嶅悓 TTL锛岄伩鍏嶄竴鍒€鍒囥€?/li>
+ *   <li>缁熶竴 JSON 搴忓垪鍖栵紝鍏煎 LocalDateTime 绛?Java 鏃堕棿绫诲瀷銆?/li>
  * </ul>
  *
- * <p>默认不强依赖 Redis；只有启用 `redis` profile 后，缓存类型才会切换为 Redis。</p>
+ * <p>榛樿涓嶅己渚濊禆 Redis锛涘彧鏈夊惎鐢?`redis` profile 鍚庯紝缂撳瓨绫诲瀷鎵嶄細鍒囨崲涓?Redis銆?/p>
  */
 @EnableCaching
 @Configuration
@@ -44,10 +43,10 @@ public class RedisCacheConfig {
         return builder -> {
             RedisCacheConfiguration defaultCfg = baseRedisCacheConfiguration(Duration.ofMinutes(10), props.getKeyPrefix());
 
-            // 默认配置作为兜底值。
+            // Apply the default cache configuration as a fallback.
             builder.cacheDefaults(defaultCfg);
 
-            // 草稿详情：短 TTL，且不缓存 null。
+            // Draft detail caches use a shorter TTL and do not cache null values.
             builder.withCacheConfiguration(
                     CacheNames.DRAFT_DETAIL_BY_ID,
                     baseRedisCacheConfiguration(props.getDraftDetailTtl(), props.getKeyPrefix()).disableCachingNullValues()
@@ -57,13 +56,13 @@ public class RedisCacheConfig {
                     baseRedisCacheConfiguration(props.getDraftDetailTtl(), props.getKeyPrefix()).disableCachingNullValues()
             );
 
-            // 草稿列表：极短 TTL，仅用于演示或统计类页面，不代替分页查询。
+            // Draft list cache is intentionally very short-lived.
             builder.withCacheConfiguration(
                     CacheNames.DRAFT_LIST_LATEST,
                     baseRedisCacheConfiguration(props.getDraftListTtl(), props.getKeyPrefix()).disableCachingNullValues()
             );
 
-            // 状态计数：非常短的 TTL，接受轻微延迟以换取更稳定的读性能。
+            // Status counts accept slight staleness in exchange for better read stability.
             builder.withCacheConfiguration(
                     CacheNames.DRAFT_STATUS_COUNT,
                     baseRedisCacheConfiguration(props.getDraftStatusCountTtl(), props.getKeyPrefix()).disableCachingNullValues()
@@ -72,9 +71,8 @@ public class RedisCacheConfig {
     }
 
     /**
-     * Redis 抖动或网络异常时，缓存读写失败不应影响主业务。
-     *
-     * <p>如果你更倾向 fail-fast，也可以改成直接抛异常。</p>
+     * Redis 鎶栧姩鎴栫綉缁滃紓甯告椂锛岀紦瀛樿鍐欏け璐ヤ笉搴斿奖鍝嶄富涓氬姟銆?     *
+     * <p>濡傛灉浣犳洿鍊惧悜 fail-fast锛屼篃鍙互鏀规垚鐩存帴鎶涘紓甯搞€?/p>
      */
     @Bean
     public CacheErrorHandler cacheErrorHandler() {
@@ -106,7 +104,7 @@ public class RedisCacheConfig {
     }
 
     private RedisCacheConfiguration baseRedisCacheConfiguration(Duration ttl, String keyPrefix) {
-        // key 统一使用 String，value 使用 JSON，便于存储复杂对象。
+        // Use String keys and JSON values for better readability and polymorphic object support.
         StringRedisSerializer keySerializer = new StringRedisSerializer();
         GenericJackson2JsonRedisSerializer valueSerializer = new GenericJackson2JsonRedisSerializer(redisObjectMapper());
 
@@ -115,7 +113,7 @@ public class RedisCacheConfig {
                 .serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(valueSerializer))
                 .entryTtl(ttl == null ? Duration.ofMinutes(10) : ttl);
 
-        // 自定义前缀用于隔离不同环境或不同服务的 key 空间。
+        // Apply a custom prefix when configured to isolate environments/services.
         if (keyPrefix != null && !keyPrefix.isBlank()) {
             cfg = cfg.computePrefixWith(cacheName -> keyPrefix + "cache:" + cacheName + ":");
         }
@@ -125,7 +123,7 @@ public class RedisCacheConfig {
     private ObjectMapper redisObjectMapper() {
         ObjectMapper mapper = new ObjectMapper();
         mapper.registerModule(new JavaTimeModule());
-        // Redis 缓存值需要携带类型信息，避免反序列化时丢失具体类型。
+        // Preserve type information so cached polymorphic objects can be deserialized safely.
         mapper.activateDefaultTyping(
                 LaissezFaireSubTypeValidator.instance,
                 ObjectMapper.DefaultTyping.NON_FINAL,

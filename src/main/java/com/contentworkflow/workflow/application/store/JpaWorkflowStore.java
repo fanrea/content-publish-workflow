@@ -1,4 +1,4 @@
-package com.contentworkflow.workflow.application.store;
+﻿package com.contentworkflow.workflow.application.store;
 
 import com.contentworkflow.common.api.PageResponse;
 import com.contentworkflow.workflow.domain.entity.ContentDraft;
@@ -335,7 +335,7 @@ public class JpaWorkflowStore implements WorkflowStore {
             commandRepo.save(entity);
             return true;
         } catch (DataIntegrityViolationException e) {
-            // 并发或重复请求：同一个 (draftId, commandType, idempotencyKey) 已存在。
+            // Concurrent or duplicate insert for the same (draftId, commandType, idempotencyKey).
             return false;
         }
     }

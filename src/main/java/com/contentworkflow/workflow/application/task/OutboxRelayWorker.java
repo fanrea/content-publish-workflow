@@ -1,4 +1,4 @@
-package com.contentworkflow.workflow.application.task;
+﻿package com.contentworkflow.workflow.application.task;
 
 import com.contentworkflow.common.messaging.WorkflowMessagingProperties;
 import com.contentworkflow.common.messaging.outbox.OutboxEventEntity;
@@ -62,8 +62,7 @@ public class OutboxRelayWorker {
         int lockSeconds = Math.max(5, props.getRelay().getLockSeconds());
         LocalDateTime lockExpiredBefore = now.minusSeconds(lockSeconds);
 
-        // 关键点：不要在同一个 DB 事务中直接发 MQ。
-        // 否则一旦事务回滚，就会出现“消息已发出但 outbox 状态没更新”的重复投递风险。
+        // Do not send MQ messages inside the same DB transaction as outbox state changes.
         List<ClaimedEvent> claimed = claimBatch(now, lockExpiredBefore, batchSize);
         for (ClaimedEvent e : claimed) {
             deliverOne(e, now);
@@ -90,7 +89,7 @@ public class OutboxRelayWorker {
             return List.of();
         }
 
-        // 先把状态置为 SENDING 并落锁，避免多实例重复 claim。
+        // Mark rows as SENDING and acquire the lease before leaving the transaction.
         for (OutboxEventEntity e : rows) {
             e.setStatus(OutboxEventStatus.SENDING);
             e.setLockedBy(workerId);
@@ -117,7 +116,7 @@ public class OutboxRelayWorker {
         if (row == null) {
             return;
         }
-        // 防御：只允许“被当前 worker 锁定且处于 SENDING” 的事件进入 SENT。
+        // Only the worker that currently holds the lease may finalize the event as SENT.
         if (row.getStatus() != OutboxEventStatus.SENDING || !workerId.equals(row.getLockedBy())) {
             return;
         }
@@ -206,8 +205,7 @@ public class OutboxRelayWorker {
     }
 
     /**
-     * 轻量 DTO：避免把 JPA Entity 带出事务范围（减少意外懒加载/脏写风险）。
-     */
+     * 杞婚噺 DTO锛氶伩鍏嶆妸 JPA Entity 甯﹀嚭浜嬪姟鑼冨洿锛堝噺灏戞剰澶栨噿鍔犺浇/鑴忓啓椋庨櫓锛夈€?     */
     private record ClaimedEvent(
             Long id,
             String eventId,
