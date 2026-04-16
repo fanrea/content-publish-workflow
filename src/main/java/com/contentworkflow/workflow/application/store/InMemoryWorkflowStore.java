@@ -1,4 +1,4 @@
-﻿package com.contentworkflow.workflow.application.store;
+package com.contentworkflow.workflow.application.store;
 
 import com.contentworkflow.common.api.PageResponse;
 import com.contentworkflow.workflow.domain.entity.ContentDraft;
@@ -24,10 +24,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 /**
- * Demo store: thread-safe collections + local id generators.
- *
- * <p>Important: this is not a database replacement. It exists to keep the workflow layer
- * testable and runnable before persistence is wired in.</p>
+ * 存储抽象，用于统一封装业务对象的持久化读写与查询访问。
  */
 @Component
 public class InMemoryWorkflowStore implements WorkflowStore {
@@ -46,12 +43,25 @@ public class InMemoryWorkflowStore implements WorkflowStore {
     private final AtomicLong logIdGenerator = new AtomicLong(1);
     private final AtomicLong commandIdGenerator = new AtomicLong(1);
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @return 符合条件的结果集合
+     */
+
     @Override
     public List<ContentDraft> listDrafts() {
         return drafts.values().stream()
                 .sorted((left, right) -> right.getUpdatedAt().compareTo(left.getUpdatedAt()))
                 .toList();
     }
+
+    /**
+     * 按分页条件查询数据，并返回包含分页元信息的结果。
+     *
+     * @param request 封装业务输入的请求对象
+     * @return 包含分页数据和分页元信息的结果对象
+     */
 
     @Override
     public PageResponse<ContentDraft> pageDrafts(DraftQueryRequest request) {
@@ -70,6 +80,13 @@ public class InMemoryWorkflowStore implements WorkflowStore {
         return new PageResponse<>(pageItems, total, pageNo, pageSize, totalPages);
     }
 
+    /**
+     * 统计满足条件的数据数量，用于计数或监控场景。
+     *
+     * @param request 封装业务输入的请求对象
+     * @return 方法处理后的结果对象
+     */
+
     @Override
     public Map<WorkflowStatus, Long> countDraftsByStatus(DraftQueryRequest request) {
         return filterDrafts(listDrafts(), request).stream()
@@ -79,6 +96,13 @@ public class InMemoryWorkflowStore implements WorkflowStore {
                         Collectors.counting()
                 ));
     }
+
+    /**
+     * 处理 insert draft 相关逻辑，并返回对应的执行结果。
+     *
+     * @param draft 草稿对象
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     public ContentDraft insertDraft(ContentDraft draft) {
@@ -91,16 +115,37 @@ public class InMemoryWorkflowStore implements WorkflowStore {
         return draft;
     }
 
+    /**
+     * 按给定条件查找匹配的业务对象。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 匹配到结果时返回对应对象，否则返回空的 Optional 容器
+     */
+
     @Override
     public Optional<ContentDraft> findDraftById(Long draftId) {
         return Optional.ofNullable(drafts.get(draftId));
     }
+
+    /**
+     * 根据输入参数更新已有业务对象，并返回更新后的状态。
+     *
+     * @param draft 草稿对象
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     public ContentDraft updateDraft(ContentDraft draft) {
         drafts.put(draft.getId(), draft);
         return draft;
     }
+
+    /**
+     * 处理 insert review record 相关逻辑，并返回对应的执行结果。
+     *
+     * @param record 记录对象
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     public ReviewRecord insertReviewRecord(ReviewRecord record) {
@@ -110,10 +155,24 @@ public class InMemoryWorkflowStore implements WorkflowStore {
         return record;
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 符合条件的结果集合
+     */
+
     @Override
     public List<ReviewRecord> listReviewRecords(Long draftId) {
         return new ArrayList<>(reviews.getOrDefault(draftId, List.of()));
     }
+
+    /**
+     * 处理 insert snapshot 相关逻辑，并返回对应的执行结果。
+     *
+     * @param snapshot 参数 snapshot 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     public ContentSnapshot insertSnapshot(ContentSnapshot snapshot) {
@@ -123,10 +182,24 @@ public class InMemoryWorkflowStore implements WorkflowStore {
         return snapshot;
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 符合条件的结果集合
+     */
+
     @Override
     public List<ContentSnapshot> listSnapshots(Long draftId) {
         return new ArrayList<>(snapshots.getOrDefault(draftId, List.of()));
     }
+
+    /**
+     * 处理 insert publish tasks 相关逻辑，并返回对应的执行结果。
+     *
+     * @param taskList 待处理的数据集合
+     * @return 符合条件的结果集合
+     */
 
     @Override
     public List<PublishTask> insertPublishTasks(List<PublishTask> taskList) {
@@ -141,10 +214,24 @@ public class InMemoryWorkflowStore implements WorkflowStore {
         return taskList;
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 符合条件的结果集合
+     */
+
     @Override
     public List<PublishTask> listPublishTasks(Long draftId) {
         return new ArrayList<>(tasks.getOrDefault(draftId, List.of()));
     }
+
+    /**
+     * 根据输入参数更新已有业务对象，并返回更新后的状态。
+     *
+     * @param task 任务对象
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     public PublishTask updatePublishTask(PublishTask task) {
@@ -173,6 +260,13 @@ public class InMemoryWorkflowStore implements WorkflowStore {
         throw new IllegalStateException("task not found: " + task.getId());
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param status 状态值
+     * @return 符合条件的结果集合
+     */
+
     @Override
     public List<PublishTask> listPublishTasksByStatus(PublishTaskStatus status) {
         return tasks.values().stream()
@@ -181,6 +275,16 @@ public class InMemoryWorkflowStore implements WorkflowStore {
                 .sorted((l, r) -> l.getUpdatedAt().compareTo(r.getUpdatedAt()))
                 .toList();
     }
+
+    /**
+     * 处理 claim runnable publish tasks 相关逻辑，并返回对应的执行结果。
+     *
+     * @param limit 参数 limit 对应的业务输入值
+     * @param workerId 相关业务对象的唯一标识
+     * @param now 参数 now 对应的业务输入值
+     * @param lockSeconds 参数 lockSeconds 对应的业务输入值
+     * @return 符合条件的结果集合
+     */
 
     @Override
     public List<PublishTask> claimRunnablePublishTasks(int limit, String workerId, LocalDateTime now, int lockSeconds) {
@@ -221,6 +325,13 @@ public class InMemoryWorkflowStore implements WorkflowStore {
         return claimed;
     }
 
+    /**
+     * 处理 insert publish log 相关逻辑，并返回对应的执行结果。
+     *
+     * @param entry 参数 entry 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
+
     @Override
     public PublishLogEntry insertPublishLog(PublishLogEntry entry) {
         long id = logIdGenerator.getAndIncrement();
@@ -229,10 +340,24 @@ public class InMemoryWorkflowStore implements WorkflowStore {
         return entry;
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 符合条件的结果集合
+     */
+
     @Override
     public List<PublishLogEntry> listPublishLogs(Long draftId) {
         return new ArrayList<>(logs.getOrDefault(draftId, List.of()));
     }
+
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param traceId 链路追踪标识
+     * @return 符合条件的结果集合
+     */
 
     @Override
     public List<PublishLogEntry> listPublishLogsByTraceId(String traceId) {
@@ -246,6 +371,15 @@ public class InMemoryWorkflowStore implements WorkflowStore {
                 .toList();
     }
 
+    /**
+     * 按给定条件查找匹配的业务对象。
+     *
+     * @param draftId 草稿唯一标识
+     * @param commandType 参数 commandType 对应的业务输入值
+     * @param idempotencyKey 参数 idempotencyKey 对应的业务输入值
+     * @return 匹配到结果时返回对应对象，否则返回空的 Optional 容器
+     */
+
     @Override
     public Optional<PublishCommandEntry> findPublishCommand(Long draftId, String commandType, String idempotencyKey) {
         if (draftId == null || commandType == null || idempotencyKey == null) {
@@ -253,6 +387,13 @@ public class InMemoryWorkflowStore implements WorkflowStore {
         }
         return Optional.ofNullable(publishCommands.get(commandKey(draftId, commandType, idempotencyKey)));
     }
+
+    /**
+     * 处理 try create publish command 相关逻辑，并返回对应的执行结果。
+     *
+     * @param entry 参数 entry 对应的业务输入值
+     * @return 返回 true 表示条件成立或处理成功，返回 false 表示条件不成立或未命中
+     */
 
     @Override
     public boolean tryCreatePublishCommand(PublishCommandEntry entry) {
@@ -279,6 +420,13 @@ public class InMemoryWorkflowStore implements WorkflowStore {
         return publishCommands.putIfAbsent(key, created) == null;
     }
 
+    /**
+     * 根据输入参数更新已有业务对象，并返回更新后的状态。
+     *
+     * @param entry 参数 entry 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
+
     @Override
     public PublishCommandEntry updatePublishCommand(PublishCommandEntry entry) {
         if (entry == null || entry.getDraftId() == null || entry.getCommandType() == null || entry.getIdempotencyKey() == null) {
@@ -301,6 +449,13 @@ public class InMemoryWorkflowStore implements WorkflowStore {
         return existing;
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 符合条件的结果集合
+     */
+
     @Override
     public List<PublishCommandEntry> listPublishCommands(Long draftId) {
         if (draftId == null) {
@@ -311,6 +466,14 @@ public class InMemoryWorkflowStore implements WorkflowStore {
                 .sorted(Comparator.comparing(PublishCommandEntry::getCreatedAt).reversed())
                 .toList();
     }
+
+    /**
+     * 处理 filter drafts 相关逻辑，并返回对应的执行结果。
+     *
+     * @param source 参数 source 对应的业务输入值
+     * @param request 封装业务输入的请求对象
+     * @return 符合条件的结果集合
+     */
 
     private List<ContentDraft> filterDrafts(List<ContentDraft> source, DraftQueryRequest request) {
         String keyword = request.keyword();
@@ -348,6 +511,14 @@ public class InMemoryWorkflowStore implements WorkflowStore {
                 .toList();
     }
 
+    /**
+     * 处理 sort drafts 相关逻辑，并返回对应的执行结果。
+     *
+     * @param source 参数 source 对应的业务输入值
+     * @param request 封装业务输入的请求对象
+     * @return 符合条件的结果集合
+     */
+
     private List<ContentDraft> sortDrafts(List<ContentDraft> source, DraftQueryRequest request) {
         Comparator<ContentDraft> comparator = switch (request.sortBy()) {
             case ID -> Comparator.comparing(ContentDraft::getId, Comparator.nullsLast(Long::compareTo));
@@ -361,12 +532,29 @@ public class InMemoryWorkflowStore implements WorkflowStore {
         return source.stream().sorted(comparator).toList();
     }
 
+    /**
+     * 处理 contains ignore case 相关逻辑，并返回对应的执行结果。
+     *
+     * @param text 参数 text 对应的业务输入值
+     * @param keywordLowerCase 参数 keywordLowerCase 对应的业务输入值
+     * @return 返回 true 表示条件成立或处理成功，返回 false 表示条件不成立或未命中
+     */
+
     private boolean containsIgnoreCase(String text, String keywordLowerCase) {
         if (text == null) {
             return false;
         }
         return text.toLowerCase().contains(keywordLowerCase);
     }
+
+    /**
+     * 处理 command key 相关逻辑，并返回对应的执行结果。
+     *
+     * @param draftId 草稿唯一标识
+     * @param commandType 参数 commandType 对应的业务输入值
+     * @param idempotencyKey 参数 idempotencyKey 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
 
     private String commandKey(Long draftId, String commandType, String idempotencyKey) {
         // ASCII-only delimiter to avoid encoding issues on Windows consoles/editors.

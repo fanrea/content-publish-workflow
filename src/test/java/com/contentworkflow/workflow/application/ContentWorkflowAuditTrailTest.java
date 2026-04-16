@@ -25,10 +25,18 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/**
+ * 测试类，用于验证当前模块在特定场景下的行为、状态变化或边界条件。
+ */
+
 class ContentWorkflowAuditTrailTest {
 
     private InMemoryWorkflowStore store;
     private ContentWorkflowService service;
+
+    /**
+     * 执行测试前的初始化逻辑，为后续测试用例准备运行环境。
+     */
 
     @BeforeEach
     void setUp() {
@@ -36,10 +44,18 @@ class ContentWorkflowAuditTrailTest {
         service = new InMemoryContentWorkflowService(store);
     }
 
+    /**
+     * 处理 tear down 相关逻辑，并返回对应的执行结果。
+     */
+
     @AfterEach
     void tearDown() {
         WorkflowAuditContextHolder.clear();
     }
+
+    /**
+     * 触发发布流程，并返回发布动作对应的处理结果。
+     */
 
     @Test
     void publish_logs_should_expose_structured_audit_fields_and_trace_timeline() {

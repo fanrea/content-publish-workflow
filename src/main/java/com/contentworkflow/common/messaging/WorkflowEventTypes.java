@@ -1,12 +1,13 @@
 package com.contentworkflow.common.messaging;
 
 /**
- * Workflow event type constants.
- *
- * <p>Task events represent side effects accepted by this service and relayed through outbox +
- * RabbitMQ. Publish state events represent workflow milestones after orchestration.</p>
+ * 当前模块中的核心类型，用于承载对应场景下的业务数据或处理能力。
  */
 public final class WorkflowEventTypes {
+
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     */
 
     private WorkflowEventTypes() {
     }

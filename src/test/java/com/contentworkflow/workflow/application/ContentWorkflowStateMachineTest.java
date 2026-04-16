@@ -26,16 +26,28 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/**
+ * 测试类，用于验证当前模块在特定场景下的行为、状态变化或边界条件。
+ */
+
 class ContentWorkflowStateMachineTest {
 
     private ContentWorkflowService service;
     private WorkflowStore store;
+
+    /**
+     * 执行测试前的初始化逻辑，为后续测试用例准备运行环境。
+     */
 
     @BeforeEach
     void setUp() {
         store = new InMemoryWorkflowStore();
         service = new InMemoryContentWorkflowService(store);
     }
+
+    /**
+     * 提交当前业务动作，推动流程进入下一处理阶段。
+     */
 
     @Test
     void submit_review_can_only_happen_once_before_decision() {
@@ -51,6 +63,10 @@ class ContentWorkflowStateMachineTest {
                 () -> service.updateDraft(draft.id(), new UpdateDraftRequest("t2", "s2", "b2")));
         assertCode(editEx, "INVALID_WORKFLOW_STATE");
     }
+
+    /**
+     * 触发发布流程，并返回发布动作对应的处理结果。
+     */
 
     @Test
     void publish_requires_approved_or_publish_failed() {
@@ -72,6 +88,10 @@ class ContentWorkflowStateMachineTest {
         assertCode(republishEx, "INVALID_WORKFLOW_STATE");
     }
 
+    /**
+     * 执行审核动作，并根据审核结果更新流程状态。
+     */
+
     @Test
     void review_requires_reviewing_state_and_reject_sets_last_review_comment() {
         ContentDraftResponse draft = service.createDraft(new CreateDraftRequest("t", "s", "b"));
@@ -92,6 +112,10 @@ class ContentWorkflowStateMachineTest {
         assertNull(edited.lastReviewComment());
         assertEquals(rejected.draftVersion() + 1, edited.draftVersion());
     }
+
+    /**
+     * 执行回滚流程，将业务状态恢复到目标版本或阶段。
+     */
 
     @Test
     void rollback_requires_published_and_target_snapshot_must_exist() {

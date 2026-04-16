@@ -12,16 +12,36 @@ import org.springframework.data.repository.query.Param;
 import java.time.LocalDateTime;
 import java.util.List;
 
+/**
+ * 持久化仓储接口，负责定义数据库访问能力、查询条件以及相关的缓存协同策略。
+ */
+
 public interface PublishTaskJpaRepository extends JpaRepository<PublishTaskJpaEntity, Long> {
+    /**
+     * 按给定条件查找匹配的业务对象。
+     *
+     * @param status 状态值
+     * @return 符合条件的结果集合
+     */
+
     List<PublishTaskJpaEntity> findByStatusOrderByUpdatedAtAsc(PublishTaskStatus status);
+
+    /**
+     * 按给定条件查找匹配的业务对象。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 符合条件的结果集合
+     */
 
     List<PublishTaskJpaEntity> findByDraftIdOrderByUpdatedAtDesc(Long draftId);
 
     /**
-     * Claiming: query a batch of runnable tasks with a write lock to avoid concurrent double-claim.
+     * 按给定条件查找匹配的业务对象。
      *
-     * <p>This favors readability and correctness. If higher throughput is needed, it can be
-     * replaced by an atomic MySQL {@code UPDATE ... LIMIT} claiming approach.</p>
+     * @param now 参数 now 对应的业务输入值
+     * @param lockExpiredBefore 参数 lockExpiredBefore 对应的业务输入值
+     * @param pageable 参数 pageable 对应的业务输入值
+     * @return 符合条件的结果集合
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
@@ -35,6 +55,14 @@ public interface PublishTaskJpaRepository extends JpaRepository<PublishTaskJpaEn
     List<PublishTaskJpaEntity> findRunnableForUpdate(@Param("now") LocalDateTime now,
                                                     @Param("lockExpiredBefore") LocalDateTime lockExpiredBefore,
                                                     Pageable pageable);
+
+    /**
+     * 按给定条件查找匹配的业务对象。
+     *
+     * @param now 参数 now 对应的业务输入值
+     * @param pageable 参数 pageable 对应的业务输入值
+     * @return 符合条件的结果集合
+     */
 
     default List<PublishTaskJpaEntity> findRunnableForUpdate(LocalDateTime now, Pageable pageable) {
         // Default lock expiration threshold: now-60s. Tune in store/worker based on deployment needs.

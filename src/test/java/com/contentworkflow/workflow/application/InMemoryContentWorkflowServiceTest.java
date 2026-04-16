@@ -18,16 +18,28 @@ import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+/**
+ * 测试类，用于验证当前模块在特定场景下的行为、状态变化或边界条件。
+ */
+
 class InMemoryContentWorkflowServiceTest {
 
     private ContentWorkflowService service;
     private WorkflowStore store;
+
+    /**
+     * 执行测试前的初始化逻辑，为后续测试用例准备运行环境。
+     */
 
     @BeforeEach
     void setUp() {
         store = new InMemoryWorkflowStore();
         service = new InMemoryContentWorkflowService(store);
     }
+
+    /**
+     * 执行针对当前业务场景的断言验证，确认系统行为符合预期。
+     */
 
     @Test
     void should_complete_publish_and_rollback_flow() {

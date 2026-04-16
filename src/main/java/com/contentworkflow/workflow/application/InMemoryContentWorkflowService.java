@@ -1,4 +1,4 @@
-﻿package com.contentworkflow.workflow.application;
+package com.contentworkflow.workflow.application;
 
 import com.contentworkflow.common.api.PageResponse;
 import com.contentworkflow.common.exception.BusinessException;
@@ -55,6 +55,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
+/**
+ * 应用服务实现，负责组织领域对象、存储组件与外部能力完成业务流程编排。
+ */
+
 @Service
 public class InMemoryContentWorkflowService implements ContentWorkflowService {
 
@@ -66,12 +70,17 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
     private static final String CMD_STATUS_FAILED = "FAILED";
 
     /**
-     * Keeps existing tests (which instantiate the service directly) working.
-     * Spring will prefer the {@link #InMemoryContentWorkflowService(WorkflowStore)} constructor.
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
      */
     public InMemoryContentWorkflowService() {
         this(new InMemoryWorkflowStore());
     }
+
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     *
+     * @param store 参数 store 对应的业务输入值
+     */
 
     @Autowired
     public InMemoryContentWorkflowService(WorkflowStore store) {
@@ -80,6 +89,10 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
 
     @Value("${workflow.demo.seedDraft:false}")
     private boolean seedDraft;
+
+    /**
+     * 处理 init 相关逻辑，并返回对应的执行结果。
+     */
 
     @PostConstruct
     public void init() {
@@ -92,6 +105,12 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         }
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @return 符合条件的结果集合
+     */
+
     @Override
     @Transactional(readOnly = true)
     public List<ContentDraftResponse> listDrafts() {
@@ -99,6 +118,13 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
                 .map(this::toDraftResponse)
                 .toList();
     }
+
+    /**
+     * 按分页条件查询数据，并返回包含分页元信息的结果。
+     *
+     * @param request 封装业务输入的请求对象
+     * @return 包含分页数据和分页元信息的结果对象
+     */
 
     @Override
     @Transactional(readOnly = true)
@@ -112,6 +138,13 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
                 .toList();
         return new PageResponse<>(items, page.total(), page.pageNo(), page.pageSize(), page.totalPages());
     }
+
+    /**
+     * 根据输入条件获取对应的业务数据详情。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     @Transactional(readOnly = true)
@@ -139,6 +172,13 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         );
     }
 
+    /**
+     * 根据输入条件获取对应的业务数据详情。
+     *
+     * @param request 封装业务输入的请求对象
+     * @return 方法处理后的结果对象
+     */
+
     @Override
     @Transactional(readOnly = true)
     public DraftStatsResponse getDraftStats(DraftQueryRequest request) {
@@ -153,6 +193,14 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
 
         return new DraftStatsResponse(total, byStatus);
     }
+
+    /**
+     * 根据输入条件获取对应的业务数据详情。
+     *
+     * @param draftId 草稿唯一标识
+     * @param basePublishedVersion 参数 basePublishedVersion 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     @Transactional(readOnly = true)
@@ -175,12 +223,27 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         );
     }
 
+    /**
+     * 根据输入参数创建新的业务对象，并返回创建后的最新结果。
+     *
+     * @param request 封装业务输入的请求对象
+     * @return 方法处理后的结果对象
+     */
+
     @Override
     @Transactional
     public ContentDraftResponse createDraft(CreateDraftRequest request) {
         // Keep legacy callers working by defaulting to the system operator.
         return createDraft(request, WorkflowOperatorIdentity.system());
     }
+
+    /**
+     * 根据输入参数创建新的业务对象，并返回创建后的最新结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     @Transactional
@@ -208,11 +271,28 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         return toDraftResponse(draft);
     }
 
+    /**
+     * 根据输入参数更新已有业务对象，并返回更新后的状态。
+     *
+     * @param draftId 草稿唯一标识
+     * @param request 封装业务输入的请求对象
+     * @return 方法处理后的结果对象
+     */
+
     @Override
     @Transactional
     public ContentDraftResponse updateDraft(Long draftId, UpdateDraftRequest request) {
         return updateDraft(draftId, request, WorkflowOperatorIdentity.system());
     }
+
+    /**
+     * 根据输入参数更新已有业务对象，并返回更新后的状态。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     @Transactional
@@ -241,17 +321,41 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         return toDraftResponse(draft);
     }
 
+    /**
+     * 根据输入条件获取对应的业务数据详情。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 方法处理后的结果对象
+     */
+
     @Override
     @Transactional(readOnly = true)
     public ContentDraftResponse getDraft(Long draftId) {
         return toDraftResponse(requireDraft(draftId));
     }
 
+    /**
+     * 提交当前业务动作，推动流程进入下一处理阶段。
+     *
+     * @param draftId 草稿唯一标识
+     * @param request 封装业务输入的请求对象
+     * @return 方法处理后的结果对象
+     */
+
     @Override
     @Transactional
     public ContentDraftResponse submitReview(Long draftId, SubmitReviewRequest request) {
         return submitReview(draftId, request, WorkflowOperatorIdentity.system());
     }
+
+    /**
+     * 提交当前业务动作，推动流程进入下一处理阶段。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     @Transactional
@@ -275,11 +379,28 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         return toDraftResponse(draft);
     }
 
+    /**
+     * 执行审核动作，并根据审核结果更新流程状态。
+     *
+     * @param draftId 草稿唯一标识
+     * @param request 封装业务输入的请求对象
+     * @return 方法处理后的结果对象
+     */
+
     @Override
     @Transactional
     public ContentDraftResponse review(Long draftId, ReviewDecisionRequest request) {
         return review(draftId, request, WorkflowOperatorIdentity.system());
     }
+
+    /**
+     * 执行审核动作，并根据审核结果更新流程状态。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     @Transactional
@@ -330,11 +451,28 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         return toDraftResponse(draft);
     }
 
+    /**
+     * 触发发布流程，并返回发布动作对应的处理结果。
+     *
+     * @param draftId 草稿唯一标识
+     * @param request 封装业务输入的请求对象
+     * @return 方法处理后的结果对象
+     */
+
     @Override
     @Transactional
     public ContentDraftResponse publish(Long draftId, PublishRequest request) {
         return publish(draftId, request, WorkflowOperatorIdentity.system());
     }
+
+    /**
+     * 触发发布流程，并返回发布动作对应的处理结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     @Transactional
@@ -490,11 +628,28 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         }
     }
 
+    /**
+     * 执行回滚流程，将业务状态恢复到目标版本或阶段。
+     *
+     * @param draftId 草稿唯一标识
+     * @param request 封装业务输入的请求对象
+     * @return 方法处理后的结果对象
+     */
+
     @Override
     @Transactional
     public ContentDraftResponse rollback(Long draftId, RollbackRequest request) {
         return rollback(draftId, request, WorkflowOperatorIdentity.system());
     }
+
+    /**
+     * 执行回滚流程，将业务状态恢复到目标版本或阶段。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     @Transactional
@@ -563,6 +718,13 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         return toDraftResponse(draft);
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 符合条件的结果集合
+     */
+
     @Override
     @Transactional(readOnly = true)
     public List<ReviewRecordResponse> listReviews(Long draftId) {
@@ -578,6 +740,13 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
                         record.getReviewedAt()))
                 .toList();
     }
+
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 符合条件的结果集合
+     */
 
     @Override
     @Transactional(readOnly = true)
@@ -598,16 +767,38 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
                 .toList();
     }
 
+    /**
+     * 处理 require draft 相关逻辑，并返回对应的执行结果。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 方法处理后的结果对象
+     */
+
     private ContentDraft requireDraft(Long draftId) {
         return store.findDraftById(draftId)
                 .orElseThrow(() -> new BusinessException("DRAFT_NOT_FOUND", "draft not found"));
     }
+
+    /**
+     * 处理 ensure state 相关逻辑，并返回对应的执行结果。
+     *
+     * @param draft 草稿对象
+     * @param allowedStates 参数 allowedStates 对应的业务输入值
+     * @param message 提示信息
+     */
 
     private void ensureState(ContentDraft draft, EnumSet<WorkflowStatus> allowedStates, String message) {
         if (!allowedStates.contains(draft.getStatus())) {
             throw new BusinessException("INVALID_WORKFLOW_STATE", message + ", current state: " + draft.getStatus());
         }
     }
+
+    /**
+     * 处理 to draft response 相关逻辑，并返回对应的执行结果。
+     *
+     * @param draft 草稿对象
+     * @return 方法处理后的结果对象
+     */
 
     private ContentDraftResponse toDraftResponse(ContentDraft draft) {
         return new ContentDraftResponse(
@@ -625,6 +816,13 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
                 draft.getUpdatedAt()
         );
     }
+
+    /**
+     * 处理 to draft summary response 相关逻辑，并返回对应的执行结果。
+     *
+     * @param draft 草稿对象
+     * @return 方法处理后的结果对象
+     */
 
     private ContentDraftSummaryResponse toDraftSummaryResponse(ContentDraft draft) {
         return new ContentDraftSummaryResponse(
@@ -644,7 +842,11 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
     }
 
     /**
-     * 鍓嶇鎸夐挳寮€鍏筹細涓庢湇鍔＄鐘舵€佹満淇濇寔涓€鑷淬€?     */
+     * 处理 to actions 相关逻辑，并返回对应的执行结果。
+     *
+     * @param status 状态值
+     * @return 方法处理后的结果对象
+     */
     private WorkflowActionResponse toActions(WorkflowStatus status) {
         boolean canEdit = status == WorkflowStatus.DRAFT
                 || status == WorkflowStatus.REJECTED
@@ -657,6 +859,13 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         return new WorkflowActionResponse(canEdit, canSubmitReview, canReview, canPublish, canRollback, canOffline);
     }
 
+    /**
+     * 对输入值进行标准化处理，便于后续统一使用。
+     *
+     * @param request 封装业务输入的请求对象
+     * @return 方法处理后的结果对象
+     */
+
     private DraftQueryRequest normalizeQuery(DraftQueryRequest request) {
         if (request == null) {
             return new DraftQueryRequest(null, null, false, 1, 20,
@@ -665,6 +874,12 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         }
         return request.normalized();
     }
+
+    /**
+     * 处理 validate query 相关逻辑，并返回对应的执行结果。
+     *
+     * @param request 封装业务输入的请求对象
+     */
 
     private void validateQuery(DraftQueryRequest request) {
         // Use business errors instead of IllegalArgumentException to avoid surfacing as HTTP 500.
@@ -676,12 +891,24 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         }
     }
 
+    /**
+     * 处理 filter and sort drafts 相关逻辑，并返回对应的执行结果。
+     *
+     * @param drafts 参数 drafts 对应的业务输入值
+     * @param request 封装业务输入的请求对象
+     * @return 符合条件的结果集合
+     */
+
     private List<ContentDraft> filterAndSortDrafts(List<ContentDraft> drafts, DraftQueryRequest request) {
         return sortDrafts(filterDrafts(drafts, request), request);
     }
 
     /**
-     * Filtering rules without sorting so stats and paging can reuse the same predicate semantics.
+     * 处理 filter drafts 相关逻辑，并返回对应的执行结果。
+     *
+     * @param drafts 参数 drafts 对应的业务输入值
+     * @param request 封装业务输入的请求对象
+     * @return 符合条件的结果集合
      */
     private List<ContentDraft> filterDrafts(List<ContentDraft> drafts, DraftQueryRequest request) {
         // normalizeQuery() has already trimmed keyword input.
@@ -716,7 +943,11 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
     }
 
     /**
-     * Sort drafts by the requested field and direction, then append id as a stable tiebreaker.
+     * 处理 sort drafts 相关逻辑，并返回对应的执行结果。
+     *
+     * @param drafts 参数 drafts 对应的业务输入值
+     * @param request 封装业务输入的请求对象
+     * @return 符合条件的结果集合
      */
     private List<ContentDraft> sortDrafts(List<ContentDraft> drafts, DraftQueryRequest request) {
         Comparator<ContentDraft> comparator = switch (request.sortBy()) {
@@ -732,6 +963,14 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         return drafts.stream().sorted(comparator).toList();
     }
 
+/**
+ * 处理 contains ignore case 相关逻辑，并返回对应的执行结果。
+ *
+ * @param text 参数 text 对应的业务输入值
+ * @param keywordLowerCase 参数 keywordLowerCase 对应的业务输入值
+ * @return 返回 true 表示条件成立或处理成功，返回 false 表示条件不成立或未命中
+ */
+
 private boolean containsIgnoreCase(String text, String keywordLowerCase) {
     if (text == null) {
         return false;
@@ -739,19 +978,34 @@ private boolean containsIgnoreCase(String text, String keywordLowerCase) {
     return text.toLowerCase().contains(keywordLowerCase);
 }
 
+/**
+ * 处理 ensure publish has changes 相关逻辑，并返回对应的执行结果。
+ *
+ * @param diff 参数 diff 对应的业务输入值
+ */
+
 private void ensurePublishHasChanges(PublishDiffContext diff) {
     if (!diff.firstPublish() && !diff.hasChanges()) {
         throw new BusinessException("NO_PUBLISH_CHANGES", "publish rejected because no content changes were detected");
     }
 }
 
+/**
+ * 解析输入信息并生成当前流程所需的结构化结果。
+ *
+ * @param diff 参数 diff 对应的业务输入值
+ * @return 方法处理后的结果对象
+ */
+
 private EnumSet<PublishTaskType> resolvePublishTaskTypes(PublishDiffContext diff) {
     return diff.plannedTaskTypes();
 }
 
 /**
- * 骞傜瓑 key 澶嶇敤淇濇姢锛氬鏋?key 宸茬粡缁戝畾浜嗘煇涓揩鐓э紝鍐嶆浣跨敤鍚屼竴涓?key 鏃跺繀椤讳繚璇佽崏绋垮唴瀹逛竴鑷淬€?     *
- * <p>杩欐潯瑙勫垯涓昏鐢ㄤ簬闃叉瀹㈡埛绔澶嶇敤骞傜瓑 key锛屽鑷村彂甯冭姹傝闈欓粯蹇界暐銆?/p>
+ * 处理 ensure idempotency key not reused for different payload 相关逻辑，并返回对应的执行结果。
+ *
+ * @param draft 草稿对象
+ * @param existing 参数 existing 对应的业务输入值
  */
 private void ensureIdempotencyKeyNotReusedForDifferentPayload(ContentDraft draft, PublishCommandEntry existing) {
     if (existing == null || existing.getSnapshotId() == null) {
@@ -774,6 +1028,14 @@ private void ensureIdempotencyKeyNotReusedForDifferentPayload(ContentDraft draft
     }
 }
 
+/**
+ * 构建当前场景所需的结果对象或配置内容。
+ *
+ * @param remark 参数 remark 对应的业务输入值
+ * @param diff 参数 diff 对应的业务输入值
+ * @return 方法处理后的结果对象
+ */
+
 private String buildPublishAuditRemark(String remark, PublishDiffContext diff) {
     String base = remark == null ? "" : remark.trim();
     String scopes = diff.scopes().stream()
@@ -794,6 +1056,14 @@ private String buildPublishAuditRemark(String remark, PublishDiffContext diff) {
     }
     return base + " | " + suffix;
 }
+
+/**
+ * 加载当前流程所需的数据内容。
+ *
+ * @param draft 草稿对象
+ * @param requestedBasePublishedVersion 参数 requestedBasePublishedVersion 对应的业务输入值
+ * @return 方法处理后的结果对象
+ */
 
 private PublishDiffContext loadPublishDiff(ContentDraft draft, Integer requestedBasePublishedVersion) {
     int baseVersion = requestedBasePublishedVersion == null
@@ -855,6 +1125,13 @@ private PublishDiffContext loadPublishDiff(ContentDraft draft, Integer requested
     return new PublishDiffContext(baseVersion, firstPublish, hasChanges, fields, scopes, plannedTasks, taskTypes);
 }
 
+/**
+ * 解析输入信息并生成当前流程所需的结构化结果。
+ *
+ * @param draft 草稿对象
+ * @return 统计值或数量结果
+ */
+
 private int resolveDefaultBasePublishedVersion(ContentDraft draft) {
     int publishedVersion = safeInt(draft.getPublishedVersion());
     if (draft.getStatus() == WorkflowStatus.PUBLISH_FAILED && publishedVersion > 0) {
@@ -864,13 +1141,34 @@ private int resolveDefaultBasePublishedVersion(ContentDraft draft) {
     return publishedVersion;
 }
 
+/**
+ * 处理 safe int 相关逻辑，并返回对应的执行结果。
+ *
+ * @param value 待处理的原始值
+ * @return 统计值或数量结果
+ */
+
 private int safeInt(Integer value) {
     return value == null ? 0 : value;
 }
 
+/**
+ * 处理 safe string 相关逻辑，并返回对应的执行结果。
+ *
+ * @param value 待处理的原始值
+ * @return 方法处理后的结果对象
+ */
+
 private String safeString(String value) {
     return value == null ? "" : value;
 }
+
+/**
+ * 对输入值进行标准化处理，便于后续统一使用。
+ *
+ * @param key 缓存或业务标识键
+ * @return 方法处理后的结果对象
+ */
 
 private String normalizeIdempotencyKey(String key) {
     if (key == null) {
@@ -879,6 +1177,16 @@ private String normalizeIdempotencyKey(String key) {
     String trimmed = key.trim();
     return trimmed.isEmpty() ? null : trimmed;
 }
+
+/**
+ * 构建当前场景所需的结果对象或配置内容。
+ *
+ * @param field 参数 field 对应的业务输入值
+ * @param before 参数 before 对应的业务输入值
+ * @param after 参数 after 对应的业务输入值
+ * @param previewLimit 参数 previewLimit 对应的业务输入值
+ * @return 方法处理后的结果对象
+ */
 
 private PublishDiffResponse.FieldDiff buildFieldDiff(String field, String before, String after, int previewLimit) {
     boolean changed = !Objects.equals(before, after);
@@ -892,6 +1200,14 @@ private PublishDiffResponse.FieldDiff buildFieldDiff(String field, String before
     );
 }
 
+/**
+ * 处理 preview 相关逻辑，并返回对应的执行结果。
+ *
+ * @param text 参数 text 对应的业务输入值
+ * @param maxLen 参数 maxLen 对应的业务输入值
+ * @return 方法处理后的结果对象
+ */
+
 private String preview(String text, int maxLen) {
     if (text == null) {
         return null;
@@ -904,6 +1220,13 @@ private String preview(String text, int maxLen) {
     }
     return text.substring(0, maxLen);
 }
+
+/**
+ * 处理 sha256 hex 相关逻辑，并返回对应的执行结果。
+ *
+ * @param text 参数 text 对应的业务输入值
+ * @return 方法处理后的结果对象
+ */
 
 private String sha256Hex(String text) {
     if (text == null) {
@@ -923,6 +1246,16 @@ private String sha256Hex(String text) {
         return null;
     }
 }
+
+/**
+ * 构建当前场景所需的结果对象或配置内容。
+ *
+ * @param firstPublish 参数 firstPublish 对应的业务输入值
+ * @param titleChanged 参数 titleChanged 对应的业务输入值
+ * @param summaryChanged 参数 summaryChanged 对应的业务输入值
+ * @param bodyAnalysis 参数 bodyAnalysis 对应的业务输入值
+ * @return 符合条件的结果集合
+ */
 
 private List<PublishDiffResponse.ChangeScopeSummary> buildChangeScopes(boolean firstPublish,
                                                                        boolean titleChanged,
@@ -965,6 +1298,14 @@ private List<PublishDiffResponse.ChangeScopeSummary> buildChangeScopes(boolean f
     }
     return scopes;
 }
+
+/**
+ * 构建当前场景所需的结果对象或配置内容。
+ *
+ * @param firstPublish 参数 firstPublish 对应的业务输入值
+ * @param scopes 参数 scopes 对应的业务输入值
+ * @return 符合条件的结果集合
+ */
 
 private List<PublishDiffResponse.PlannedTask> buildPlannedTasks(boolean firstPublish,
                                                                 List<PublishDiffResponse.ChangeScopeSummary> scopes) {
@@ -1015,9 +1356,25 @@ private List<PublishDiffResponse.PlannedTask> buildPlannedTasks(boolean firstPub
     return tasks;
 }
 
+/**
+ * 判断当前条件下是否满足指定约束或权限要求。
+ *
+ * @param scopes 参数 scopes 对应的业务输入值
+ * @param scope 参数 scope 对应的业务输入值
+ * @return 返回 true 表示条件成立或处理成功，返回 false 表示条件不成立或未命中
+ */
+
 private boolean hasScope(List<PublishDiffResponse.ChangeScopeSummary> scopes, PublishChangeScope scope) {
     return scopes.stream().anyMatch(item -> item.scope() == scope && item.changed());
 }
+
+/**
+ * 处理 analyze body 相关逻辑，并返回对应的执行结果。
+ *
+ * @param before 参数 before 对应的业务输入值
+ * @param after 参数 after 对应的业务输入值
+ * @return 方法处理后的结果对象
+ */
 
 private BodyDiffAnalysis analyzeBody(String before, String after) {
     boolean rawChanged = !Objects.equals(before, after);
@@ -1037,12 +1394,26 @@ private BodyDiffAnalysis analyzeBody(String before, String after) {
     return new BodyDiffAnalysis(contentChanged, structureChanged, formatOnlyChanged);
 }
 
+/**
+ * 对输入值进行标准化处理，便于后续统一使用。
+ *
+ * @param text 参数 text 对应的业务输入值
+ * @return 方法处理后的结果对象
+ */
+
 private String normalizeWhitespace(String text) {
     if (text == null) {
         return null;
     }
     return text.trim().replaceAll("\\s+", " ");
 }
+
+/**
+ * 处理 analyze structure 相关逻辑，并返回对应的执行结果。
+ *
+ * @param text 参数 text 对应的业务输入值
+ * @return 方法处理后的结果对象
+ */
 
 private BodyStructure analyzeStructure(String text) {
     if (text == null || text.isBlank()) {
@@ -1074,11 +1445,28 @@ private BodyStructure analyzeStructure(String text) {
     return new BodyStructure(paragraphCount, headingCount, listItemCount);
 }
 
+/**
+ * 执行下线流程，使目标内容退出对外生效状态。
+ *
+ * @param draftId 草稿唯一标识
+ * @param request 封装业务输入的请求对象
+ * @return 方法处理后的结果对象
+ */
+
 @Override
 @Transactional
 public ContentDraftResponse offline(Long draftId, OfflineRequest request) {
     return offline(draftId, request, WorkflowOperatorIdentity.system());
 }
+
+/**
+ * 执行下线流程，使目标内容退出对外生效状态。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+ *
+ * @param draftId 草稿唯一标识
+ * @param request 封装业务输入的请求对象
+ * @param operator 当前操作人身份信息
+ * @return 方法处理后的结果对象
+ */
 
 @Override
 @Transactional
@@ -1102,6 +1490,13 @@ public ContentDraftResponse offline(Long draftId, OfflineRequest request, Workfl
     return toDraftResponse(draft);
 }
 
+/**
+ * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+ *
+ * @param draftId 草稿唯一标识
+ * @return 符合条件的结果集合
+ */
+
 @Override
 @Transactional(readOnly = true)
 public List<PublishTaskResponse> listPublishTasks(Long draftId) {
@@ -1120,6 +1515,13 @@ public List<PublishTaskResponse> listPublishTasks(Long draftId) {
             ))
             .toList();
 }
+
+/**
+ * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+ *
+ * @param draftId 草稿唯一标识
+ * @return 符合条件的结果集合
+ */
 
 @Override
 @Transactional(readOnly = true)
@@ -1143,6 +1545,13 @@ public List<PublishCommandResponse> listPublishCommands(Long draftId) {
             .toList();
 }
 
+/**
+ * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+ *
+ * @param draftId 草稿唯一标识
+ * @return 符合条件的结果集合
+ */
+
 @Override
 @Transactional(readOnly = true)
 public List<PublishLogResponse> listPublishLogs(Long draftId) {
@@ -1152,6 +1561,14 @@ public List<PublishLogResponse> listPublishLogs(Long draftId) {
             .map(this::toPublishLogResponse)
             .toList();
 }
+
+/**
+ * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+ *
+ * @param draftId 草稿唯一标识
+ * @param traceId 链路追踪标识
+ * @return 符合条件的结果集合
+ */
 
 @Override
 @Transactional(readOnly = true)
@@ -1166,6 +1583,14 @@ public List<PublishLogResponse> listPublishLogTimeline(Long draftId, String trac
             .map(this::toPublishLogResponse)
             .toList();
 }
+
+/**
+ * 根据输入条件获取对应的业务数据详情。
+ *
+ * @param draftId 草稿唯一标识
+ * @param publishedVersion 参数 publishedVersion 对应的业务输入值
+ * @return 方法处理后的结果对象
+ */
 
 @Override
 @Transactional(readOnly = true)
@@ -1207,6 +1632,13 @@ public PublishAuditTimelineResponse getPublishAuditTimeline(Long draftId, Intege
     );
 }
 
+/**
+ * 处理 to publish log response 相关逻辑，并返回对应的执行结果。
+ *
+ * @param entry 参数 entry 对应的业务输入值
+ * @return 方法处理后的结果对象
+ */
+
 private PublishLogResponse toPublishLogResponse(PublishLogEntry entry) {
     return new PublishLogResponse(
             entry.getId(),
@@ -1230,6 +1662,14 @@ private PublishLogResponse toPublishLogResponse(PublishLogEntry entry) {
     );
 }
 
+/**
+ * 解析输入信息并生成当前流程所需的结构化结果。
+ *
+ * @param draft 草稿对象
+ * @param publishedVersion 参数 publishedVersion 对应的业务输入值
+ * @return 统计值或数量结果
+ */
+
 private int resolvePublishTimelineVersion(ContentDraft draft, Integer publishedVersion) {
     if (publishedVersion != null) {
         if (publishedVersion <= 0) {
@@ -1243,6 +1683,10 @@ private int resolvePublishTimelineVersion(ContentDraft draft, Integer publishedV
     return draft.getPublishedVersion();
 }
 
+/**
+ * 不可变数据模型，用于以紧凑形式承载当前场景下需要传递的数据内容。
+ */
+
 private record PublishDiffContext(
         int basePublishedVersion,
         boolean firstPublish,
@@ -1252,6 +1696,13 @@ private record PublishDiffContext(
         List<PublishDiffResponse.PlannedTask> plannedTasks,
         EnumSet<PublishTaskType> plannedTaskTypes
 ) {
+    /**
+     * 处理 field changed 相关逻辑，并返回对应的执行结果。
+     *
+     * @param field 参数 field 对应的业务输入值
+     * @return 返回 true 表示条件成立或处理成功，返回 false 表示条件不成立或未命中
+     */
+
     private boolean fieldChanged(String field) {
         return fields.stream()
                 .filter(item -> Objects.equals(item.field(), field))
@@ -1261,12 +1712,20 @@ private record PublishDiffContext(
     }
 }
 
+/**
+ * 不可变数据模型，用于以紧凑形式承载当前场景下需要传递的数据内容。
+ */
+
 private record BodyDiffAnalysis(
         boolean contentChanged,
         boolean structureChanged,
         boolean formatOnlyChanged
 ) {
 }
+
+/**
+ * 不可变数据模型，用于以紧凑形式承载当前场景下需要传递的数据内容。
+ */
 
 private record BodyStructure(
         int paragraphCount,

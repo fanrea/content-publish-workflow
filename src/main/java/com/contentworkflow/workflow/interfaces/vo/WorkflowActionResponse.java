@@ -1,8 +1,7 @@
 package com.contentworkflow.workflow.interfaces.vo;
 
 /**
- * 前端动作开关：前端可直接根据这些字段控制按钮显示/置灰，
- * 避免在前端重复实现状态机判断逻辑。
+ * 接口层响应模型，用于向调用方返回结构化的业务结果。
  */
 public record WorkflowActionResponse(
         boolean canEdit,

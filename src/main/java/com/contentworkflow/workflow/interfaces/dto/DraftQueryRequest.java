@@ -10,11 +10,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * 草稿分页查询请求（GET 查询参数绑定）。
- *
- * <p>说明：</p>
- * <p>1) {@code status} 支持多选：/drafts/page?status=DRAFT&status=APPROVED</p>
- * <p>2) 时间参数建议使用 ISO-8601：2026-04-14T12:00:00</p>
+ * 接口层请求模型，用于封装客户端输入参数并承载校验约束。
  */
 public record DraftQueryRequest(
         /**
@@ -74,9 +70,9 @@ public record DraftQueryRequest(
         @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime updatedTo
 ) {
     /**
-     * 归一化默认值（避免 controller/service 里散落默认值判断）。
+     * 对输入值进行标准化处理，便于后续统一使用。
      *
-     * <p>注意：统计接口会忽略分页参数，但仍建议通过该方法补齐默认值，以统一行为。</p>
+     * @return 方法处理后的结果对象
      */
     public DraftQueryRequest normalized() {
         Integer normalizedPageNo = pageNo == null ? 1 : pageNo;
@@ -101,7 +97,7 @@ public record DraftQueryRequest(
     }
 
     /**
-     * 草稿列表排序字段。
+     * 枚举类型，用于集中定义当前领域中的固定状态、角色或分类值。
      */
     public enum DraftSortBy {
         ID,
@@ -110,7 +106,7 @@ public record DraftQueryRequest(
     }
 
     /**
-     * 排序方向。
+     * 枚举类型，用于集中定义当前领域中的固定状态、角色或分类值。
      */
     public enum SortDirection {
         ASC,

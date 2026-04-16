@@ -6,10 +6,7 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 /**
- * Idempotent publish command record.
- *
- * <p>Repeated publish requests with the same idempotency key should reuse the same command
- * instead of creating duplicate snapshots and publish tasks.</p>
+ * 当前模块中的核心类型，用于承载对应场景下的业务数据或处理能力。
  */
 @Data
 @Builder

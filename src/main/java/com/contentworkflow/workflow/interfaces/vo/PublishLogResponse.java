@@ -5,6 +5,10 @@ import com.contentworkflow.workflow.domain.enums.WorkflowAuditTargetType;
 
 import java.time.LocalDateTime;
 
+/**
+ * 接口层响应模型，用于向调用方返回结构化的业务结果。
+ */
+
 public record PublishLogResponse(
         Long id,
         String traceId,

@@ -1,4 +1,4 @@
-﻿package com.contentworkflow.workflow.infrastructure.persistence.entity;
+package com.contentworkflow.workflow.infrastructure.persistence.entity;
 
 import jakarta.persistence.*;
 import lombok.Getter;
@@ -6,6 +6,10 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.LocalDateTime;
+
+/**
+ * 持久化实体，用于映射数据库记录并承载 ORM 层的字段信息。
+ */
 
 @Getter
 @Setter
@@ -60,6 +64,10 @@ public class PublishCommandJpaEntity {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
+    /**
+     * 处理 pre persist 相关逻辑，并返回对应的执行结果。
+     */
+
     @PrePersist
     public void prePersist() {
         LocalDateTime now = LocalDateTime.now();
@@ -70,6 +78,10 @@ public class PublishCommandJpaEntity {
             updatedAt = now;
         }
     }
+
+    /**
+     * 处理 pre update 相关逻辑，并返回对应的执行结果。
+     */
 
     @PreUpdate
     public void preUpdate() {

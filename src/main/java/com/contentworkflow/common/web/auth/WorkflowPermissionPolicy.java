@@ -10,12 +10,16 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Role -> permission policy for the workflow service.
+ * 当前模块中的核心类型，用于承载对应场景下的业务数据或处理能力。
  */
 @Component
 public class WorkflowPermissionPolicy {
 
     private final Map<WorkflowRole, EnumSet<WorkflowPermission>> rolePermissions;
+
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     */
 
     public WorkflowPermissionPolicy() {
         EnumMap<WorkflowRole, EnumSet<WorkflowPermission>> mapping = new EnumMap<>(WorkflowRole.class);
@@ -52,6 +56,13 @@ public class WorkflowPermissionPolicy {
         this.rolePermissions = Collections.unmodifiableMap(mapping);
     }
 
+    /**
+     * 处理 permissions of 相关逻辑，并返回对应的执行结果。
+     *
+     * @param roles 角色集合
+     * @return 方法处理后的结果对象
+     */
+
     public EnumSet<WorkflowPermission> permissionsOf(Set<WorkflowRole> roles) {
         EnumSet<WorkflowPermission> result = EnumSet.noneOf(WorkflowPermission.class);
         if (roles == null) {
@@ -63,6 +74,14 @@ public class WorkflowPermissionPolicy {
         return result;
     }
 
+    /**
+     * 判断当前条件下是否满足指定约束或权限要求。
+     *
+     * @param roles 角色集合
+     * @param requiredPermissions 参数 requiredPermissions 对应的业务输入值
+     * @return 返回 true 表示条件成立或处理成功，返回 false 表示条件不成立或未命中
+     */
+
     public boolean hasPermissions(Set<WorkflowRole> roles, Set<WorkflowPermission> requiredPermissions) {
         if (requiredPermissions == null || requiredPermissions.isEmpty()) {
             return true;
@@ -70,6 +89,14 @@ public class WorkflowPermissionPolicy {
         EnumSet<WorkflowPermission> actual = permissionsOf(roles);
         return actual.containsAll(requiredPermissions);
     }
+
+    /**
+     * 处理 role has permissions 相关逻辑，并返回对应的执行结果。
+     *
+     * @param role 角色信息
+     * @param requiredPermissions 参数 requiredPermissions 对应的业务输入值
+     * @return 返回 true 表示条件成立或处理成功，返回 false 表示条件不成立或未命中
+     */
 
     public boolean roleHasPermissions(WorkflowRole role, Set<WorkflowPermission> requiredPermissions) {
         if (requiredPermissions == null || requiredPermissions.isEmpty()) {

@@ -8,6 +8,10 @@ import lombok.Setter;
 
 import java.time.LocalDateTime;
 
+/**
+ * 持久化实体，用于映射数据库记录并承载 ORM 层的字段信息。
+ */
+
 @Getter
 @Setter
 @NoArgsConstructor
@@ -43,6 +47,10 @@ public class ReviewRecordJpaEntity {
 
     @Column(name = "reviewed_at", nullable = false)
     private LocalDateTime reviewedAt;
+
+    /**
+     * 处理 pre persist 相关逻辑，并返回对应的执行结果。
+     */
 
     @PrePersist
     public void prePersist() {

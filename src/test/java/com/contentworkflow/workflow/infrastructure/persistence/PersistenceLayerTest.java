@@ -14,6 +14,10 @@ import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * 测试类，用于验证当前模块在特定场景下的行为、状态变化或边界条件。
+ */
+
 @DataJpaTest
 class PersistenceLayerTest {
 
@@ -34,6 +38,10 @@ class PersistenceLayerTest {
 
     @Autowired
     private PublishCommandJpaRepository commandRepo;
+
+    /**
+     * 处理 repositories_can persist and query 相关逻辑，并返回对应的执行结果。
+     */
 
     @Test
     void repositories_canPersistAndQuery() {

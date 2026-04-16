@@ -11,14 +11,20 @@ import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
 
+/**
+ * 持久化仓储接口，负责定义数据库访问能力、查询条件以及相关的缓存协同策略。
+ */
+
 public interface OutboxEventRepository extends JpaRepository<OutboxEventEntity, Long> {
 
     /**
-     * Claim 可投递事件（用悲观锁避免多实例重复 claim）。
+     * 按给定条件查找匹配的业务对象。
      *
-     * <p>说明：</p>
-     * <p>1. 不同数据库对 {@code SKIP LOCKED} 支持不一致；这里使用 {@code PESSIMISTIC_WRITE + 分页} 做一个通用骨架。</p>
-     * <p>2. 查询条件包含 {@code lockedAt < lockExpiredBefore}，用于实例崩溃后的锁过期回收。</p>
+     * @param statuses 参数 statuses 对应的业务输入值
+     * @param now 参数 now 对应的业务输入值
+     * @param lockExpiredBefore 参数 lockExpiredBefore 对应的业务输入值
+     * @param pageable 参数 pageable 对应的业务输入值
+     * @return 符合条件的结果集合
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
@@ -33,9 +39,35 @@ public interface OutboxEventRepository extends JpaRepository<OutboxEventEntity, 
                                                 @Param("lockExpiredBefore") LocalDateTime lockExpiredBefore,
                                                 Pageable pageable);
 
+    /**
+     * 按给定条件查找匹配的业务对象。
+     *
+     * @param status 状态值
+     * @param pageable 参数 pageable 对应的业务输入值
+     * @return 符合条件的结果集合
+     */
+
     List<OutboxEventEntity> findByStatusOrderByCreatedAtAsc(OutboxEventStatus status, Pageable pageable);
 
+    /**
+     * 按给定条件查找匹配的业务对象。
+     *
+     * @param statuses 参数 statuses 对应的业务输入值
+     * @param pageable 参数 pageable 对应的业务输入值
+     * @return 符合条件的结果集合
+     */
+
     List<OutboxEventEntity> findByStatusIn(Collection<OutboxEventStatus> statuses, Pageable pageable);
+
+    /**
+     * 按给定条件查找匹配的业务对象。
+     *
+     * @param aggregateType 参数 aggregateType 对应的业务输入值
+     * @param aggregateId 相关业务对象的唯一标识
+     * @param statuses 参数 statuses 对应的业务输入值
+     * @param pageable 参数 pageable 对应的业务输入值
+     * @return 符合条件的结果集合
+     */
 
     List<OutboxEventEntity> findByAggregateTypeAndAggregateIdAndStatusIn(String aggregateType,
                                                                          String aggregateId,

@@ -1,11 +1,15 @@
 package com.contentworkflow.common.messaging.outbox;
 
 /**
- * Outbox 入队（写库）扩展点。
- *
- * <p>业务侧应在同一事务内调用该接口，把“需要对外传播的事件”写入 outbox。</p>
+ * 接口契约，定义当前模块对外暴露的能力边界和协作方式。
  */
 public interface OutboxEnqueuer {
+
+    /**
+     * 处理 enqueue 相关逻辑，并返回对应的执行结果。
+     *
+     * @param event 事件对象
+     */
 
     void enqueue(OutboxEventEntity event);
 }

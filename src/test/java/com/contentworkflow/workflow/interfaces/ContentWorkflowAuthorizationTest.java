@@ -38,6 +38,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+/**
+ * 测试类，用于验证当前模块在特定场景下的行为、状态变化或边界条件。
+ */
+
 class ContentWorkflowAuthorizationTest {
 
     private MockMvc mockMvc;
@@ -45,6 +49,10 @@ class ContentWorkflowAuthorizationTest {
 
     private static final String OP_ID = "10001";
     private static final String OP_NAME = "alice";
+
+    /**
+     * 执行测试前的初始化逻辑，为后续测试用例准备运行环境。
+     */
 
     @BeforeEach
     void setUp() {
@@ -119,6 +127,10 @@ class ContentWorkflowAuthorizationTest {
                 .build();
     }
 
+    /**
+     * 根据输入参数创建新的业务对象，并返回创建后的最新结果。
+     */
+
     @Test
     void createDraft_shouldRejectWhenRoleHeaderMissing() throws Exception {
         mockMvc.perform(post("/api/workflows/drafts")
@@ -133,6 +145,10 @@ class ContentWorkflowAuthorizationTest {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
     }
+
+    /**
+     * 根据输入参数创建新的业务对象，并返回创建后的最新结果。
+     */
 
     @Test
     void createDraft_shouldRejectWhenRoleNotAllowed() throws Exception {
@@ -151,6 +167,10 @@ class ContentWorkflowAuthorizationTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
     }
+
+    /**
+     * 根据输入参数创建新的业务对象，并返回创建后的最新结果。
+     */
 
     @Test
     void createDraft_shouldAllowEditorRole() throws Exception {
@@ -171,6 +191,10 @@ class ContentWorkflowAuthorizationTest {
 
         verify(service).createDraft(any(CreateDraftRequest.class), eq(new WorkflowOperatorIdentity(OP_ID, OP_NAME, WorkflowRole.EDITOR)));
     }
+
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     */
 
     @Test
     void listDrafts_shouldRequireAdminRole() throws Exception {
@@ -193,6 +217,10 @@ class ContentWorkflowAuthorizationTest {
                 .andExpect(jsonPath("$.code").value("OK"));
     }
 
+    /**
+     * 处理 multi roles header_should work 相关逻辑，并返回对应的执行结果。
+     */
+
     @Test
     void multiRolesHeader_shouldWork() throws Exception {
         mockMvc.perform(post("/api/workflows/drafts")
@@ -210,6 +238,10 @@ class ContentWorkflowAuthorizationTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.code").value("OK"));
     }
+
+    /**
+     * 处理 invalid role token_should reject 相关逻辑，并返回对应的执行结果。
+     */
 
     @Test
     void invalidRoleToken_shouldReject() throws Exception {
@@ -229,6 +261,10 @@ class ContentWorkflowAuthorizationTest {
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
     }
 
+    /**
+     * 按分页条件查询数据，并返回包含分页元信息的结果。
+     */
+
     @Test
     void pageEndpoint_shouldRequireAuthentication() throws Exception {
         mockMvc.perform(get("/api/workflows/drafts/page"))
@@ -242,6 +278,10 @@ class ContentWorkflowAuthorizationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"));
     }
+
+    /**
+     * 处理 log timeline endpoint_should require log view permission 相关逻辑，并返回对应的执行结果。
+     */
 
     @Test
     void logTimelineEndpoint_shouldRequireLogViewPermission() throws Exception {
@@ -266,6 +306,10 @@ class ContentWorkflowAuthorizationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"));
     }
+
+    /**
+     * 触发发布流程，并返回发布动作对应的处理结果。
+     */
 
     @Test
     void publishTimelineEndpoint_shouldRequireLogViewPermission() throws Exception {

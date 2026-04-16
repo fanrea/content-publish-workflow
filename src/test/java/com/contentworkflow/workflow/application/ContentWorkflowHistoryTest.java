@@ -14,14 +14,26 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/**
+ * 测试类，用于验证当前模块在特定场景下的行为、状态变化或边界条件。
+ */
+
 class ContentWorkflowHistoryTest {
 
     private ContentWorkflowService service;
+
+    /**
+     * 执行测试前的初始化逻辑，为后续测试用例准备运行环境。
+     */
 
     @BeforeEach
     void setUp() {
         service = new InMemoryContentWorkflowService();
     }
+
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     */
 
     @Test
     void list_reviews_returns_latest_first() throws Exception {

@@ -34,6 +34,10 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+/**
+ * 测试类，用于验证当前模块在特定场景下的行为、状态变化或边界条件。
+ */
+
 class WorkflowRecoveryServiceTest {
 
     private final WorkflowOperatorIdentity operator = new WorkflowOperatorIdentity("2001", "ops-alice", WorkflowRole.OPERATOR);
@@ -41,6 +45,10 @@ class WorkflowRecoveryServiceTest {
     private InMemoryWorkflowStore store;
     private OutboxEventRepository outboxEventRepository;
     private WorkflowRecoveryService service;
+
+    /**
+     * 执行测试前的初始化逻辑，为后续测试用例准备运行环境。
+     */
 
     @BeforeEach
     void setUp() {
@@ -54,6 +62,10 @@ class WorkflowRecoveryServiceTest {
                 new ConcurrentMapCacheManager()
         );
     }
+
+    /**
+     * 处理 retry publish task_should reset recoverable task and resume draft 相关逻辑，并返回对应的执行结果。
+     */
 
     @Test
     void retryPublishTask_shouldResetRecoverableTaskAndResumeDraft() {
@@ -74,6 +86,10 @@ class WorkflowRecoveryServiceTest {
         assertEquals("PENDING", response.afterStatus());
     }
 
+    /**
+     * 处理 retry publish task_should reject stale published version 相关逻辑，并返回对应的执行结果。
+     */
+
     @Test
     void retryPublishTask_shouldRejectStalePublishedVersion() {
         ContentDraft draft = insertDraft(3, WorkflowStatus.PUBLISH_FAILED);
@@ -84,6 +100,10 @@ class WorkflowRecoveryServiceTest {
 
         BusinessExceptionAssertions.assertCode(ex, "STALE_PUBLISH_TASK");
     }
+
+    /**
+     * 处理 retry current version publish tasks_should only reset recoverable current tasks 相关逻辑，并返回对应的执行结果。
+     */
 
     @Test
     void retryCurrentVersionPublishTasks_shouldOnlyResetRecoverableCurrentTasks() {
@@ -102,6 +122,10 @@ class WorkflowRecoveryServiceTest {
         assertEquals(PublishTaskStatus.DEAD, taskById(draft.getId(), staleTask.getId()).getStatus());
         assertEquals(WorkflowStatus.PUBLISHING, store.findDraftById(draft.getId()).orElseThrow().getStatus());
     }
+
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     */
 
     @Test
     void listRecoverablePublishTasks_shouldMarkStaleTasksAsNotActionable() {
@@ -124,6 +148,10 @@ class WorkflowRecoveryServiceTest {
         assertFalse(stale.actionable());
         assertTrue(stale.staleVersion());
     }
+
+    /**
+     * 处理 retry outbox event_should reset failed event to new 相关逻辑，并返回对应的执行结果。
+     */
 
     @Test
     void retryOutboxEvent_shouldResetFailedEventToNew() {
@@ -151,6 +179,10 @@ class WorkflowRecoveryServiceTest {
         assertEquals("NEW", response.afterStatus());
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     */
+
     @Test
     void listRecoverableOutboxEvents_shouldMapRepositoryRows() {
         OutboxEventEntity event = new OutboxEventEntity();
@@ -173,6 +205,14 @@ class WorkflowRecoveryServiceTest {
         assertTrue(items.get(0).recoverable());
     }
 
+    /**
+     * 处理 insert draft 相关逻辑，并返回对应的执行结果。
+     *
+     * @param publishedVersion 参数 publishedVersion 对应的业务输入值
+     * @param status 状态值
+     * @return 方法处理后的结果对象
+     */
+
     private ContentDraft insertDraft(int publishedVersion, WorkflowStatus status) {
         LocalDateTime now = LocalDateTime.now();
         return store.insertDraft(ContentDraft.builder()
@@ -186,6 +226,17 @@ class WorkflowRecoveryServiceTest {
                 .updatedAt(now)
                 .build());
     }
+
+    /**
+     * 处理 insert task 相关逻辑，并返回对应的执行结果。
+     *
+     * @param draftId 草稿唯一标识
+     * @param publishedVersion 参数 publishedVersion 对应的业务输入值
+     * @param taskType 参数 taskType 对应的业务输入值
+     * @param status 状态值
+     * @param retryTimes 参数 retryTimes 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
 
     private PublishTask insertTask(Long draftId,
                                    int publishedVersion,
@@ -206,6 +257,14 @@ class WorkflowRecoveryServiceTest {
                 .build();
         return store.insertPublishTasks(List.of(task)).get(0);
     }
+
+    /**
+     * 处理 task by id 相关逻辑，并返回对应的执行结果。
+     *
+     * @param draftId 草稿唯一标识
+     * @param taskId 相关业务对象的唯一标识
+     * @return 方法处理后的结果对象
+     */
 
     private PublishTask taskById(Long draftId, Long taskId) {
         return store.listPublishTasks(draftId).stream()

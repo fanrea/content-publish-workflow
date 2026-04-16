@@ -5,7 +5,7 @@ import com.contentworkflow.common.messaging.outbox.OutboxEventStatus;
 import java.time.LocalDateTime;
 
 /**
- * Recoverable outbox event view for operations.
+ * 接口层响应模型，用于向调用方返回结构化的业务结果。
  */
 public record RecoverableOutboxEventResponse(
         Long id,

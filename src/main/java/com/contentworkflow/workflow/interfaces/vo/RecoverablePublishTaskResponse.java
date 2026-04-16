@@ -6,7 +6,7 @@ import com.contentworkflow.workflow.domain.enums.PublishTaskType;
 import java.time.LocalDateTime;
 
 /**
- * Recoverable publish task view for operations.
+ * 接口层响应模型，用于向调用方返回结构化的业务结果。
  */
 public record RecoverablePublishTaskResponse(
         Long id,

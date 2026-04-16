@@ -1,12 +1,13 @@
 package com.contentworkflow.common.web.auth;
 
 /**
- * Workflow auth headers and request attribute keys.
- *
- * <p>These are intentionally "custom headers" (not a full OAuth/JWT setup) to keep this service
- * self-contained while still exercising role-based authorization and operator auditing.</p>
+ * 当前模块中的核心类型，用于承载对应场景下的业务数据或处理能力。
  */
 public final class WorkflowAuthConstants {
+
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     */
 
     private WorkflowAuthConstants() {
     }

@@ -5,9 +5,7 @@ import com.contentworkflow.workflow.domain.enums.WorkflowStatus;
 import java.time.LocalDateTime;
 
 /**
- * 草稿列表页使用的轻量返回。
- *
- * <p>注意：不包含 body，避免列表页拉取大字段。</p>
+ * 接口层响应模型，用于向调用方返回结构化的业务结果。
  */
 public record ContentDraftSummaryResponse(
         Long id,

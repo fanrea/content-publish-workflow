@@ -36,6 +36,10 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
+/**
+ * 接口层控制器，负责接收 HTTP 请求、完成参数校验与权限约束，并将业务处理委托给应用服务。
+ */
+
 @RestController
 @Validated
 @RequestMapping("/api/workflows")
@@ -43,14 +47,20 @@ public class ContentWorkflowController {
 
     private final ContentWorkflowService contentWorkflowService;
 
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     *
+     * @param contentWorkflowService 参数 contentWorkflowService 对应的业务输入值
+     */
+
     public ContentWorkflowController(ContentWorkflowService contentWorkflowService) {
         this.contentWorkflowService = contentWorkflowService;
     }
 
     /**
-     * 列出全部草稿（包含 body），仅用于调试/演示。
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
      *
-     * <p>前端列表页请使用 {@link #pageDraftSummaries(DraftQueryRequest)}，避免拉取大字段。</p>
+     * @return 统一封装后的接口响应结果
      */
     @GetMapping("/drafts")
     @RequireWorkflowRole({WorkflowRole.ADMIN})
@@ -60,9 +70,10 @@ public class ContentWorkflowController {
     }
 
     /**
-     * 草稿分页查询（列表页专用）：支持关键词、状态、时间范围、排序。
+     * 按分页条件查询数据，并返回包含分页元信息的结果。
      *
-     * <p>返回轻量摘要，不包含 body。</p>
+     * @param request 封装业务输入的请求对象
+     * @return 统一封装后的接口响应结果
      */
     @GetMapping("/drafts/page")
     @RequireWorkflowPermission({WorkflowPermission.DRAFT_READ})
@@ -73,7 +84,10 @@ public class ContentWorkflowController {
     }
 
     /**
-     * 单个草稿的工作流摘要：用于详情页顶部信息区/右侧信息卡。
+     * 根据输入条件获取对应的业务数据详情。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 统一封装后的接口响应结果
      */
     @GetMapping("/drafts/{draftId}/summary")
     @RequireWorkflowPermission({WorkflowPermission.DRAFT_READ})
@@ -82,15 +96,24 @@ public class ContentWorkflowController {
     }
 
     /**
-     * 草稿统计：用于列表页的状态过滤器（Tab/Badge）。
+     * 根据输入条件获取对应的业务数据详情。
      *
-     * <p>支持与分页查询一致的过滤条件（keyword/status/time），但不包含分页参数。</p>
+     * @param request 封装业务输入的请求对象
+     * @return 统一封装后的接口响应结果
      */
     @GetMapping("/drafts/stats")
     @RequireWorkflowPermission({WorkflowPermission.DRAFT_STATS_READ})
     public ApiResponse<DraftStatsResponse> getDraftStats(@ModelAttribute @Valid DraftQueryRequest request) {
         return ApiResponse.ok(contentWorkflowService.getDraftStats(request));
     }
+
+    /**
+     * 根据输入参数创建新的业务对象，并返回创建后的最新结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 统一封装后的接口响应结果
+     */
 
     @PostMapping("/drafts")
     @ResponseStatus(HttpStatus.CREATED)
@@ -100,6 +123,15 @@ public class ContentWorkflowController {
         return ApiResponse.ok(contentWorkflowService.createDraft(request, operator));
     }
 
+    /**
+     * 根据输入参数更新已有业务对象，并返回更新后的状态。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 统一封装后的接口响应结果
+     */
+
     @PutMapping("/drafts/{draftId}")
     @RequireWorkflowPermission({WorkflowPermission.DRAFT_WRITE})
     public ApiResponse<ContentDraftResponse> updateDraft(@PathVariable @Min(1) Long draftId,
@@ -108,11 +140,27 @@ public class ContentWorkflowController {
         return ApiResponse.ok(contentWorkflowService.updateDraft(draftId, request, operator));
     }
 
+    /**
+     * 根据输入条件获取对应的业务数据详情。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 统一封装后的接口响应结果
+     */
+
     @GetMapping("/drafts/{draftId}")
     @RequireWorkflowPermission({WorkflowPermission.DRAFT_READ})
     public ApiResponse<ContentDraftResponse> getDraft(@PathVariable @Min(1) Long draftId) {
         return ApiResponse.ok(contentWorkflowService.getDraft(draftId));
     }
+
+    /**
+     * 提交当前业务动作，推动流程进入下一处理阶段。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 统一封装后的接口响应结果
+     */
 
     @PostMapping("/drafts/{draftId}/submit-review")
     @RequireWorkflowPermission({WorkflowPermission.REVIEW_SUBMIT})
@@ -122,6 +170,15 @@ public class ContentWorkflowController {
         return ApiResponse.ok(contentWorkflowService.submitReview(draftId, request, operator));
     }
 
+    /**
+     * 执行审核动作，并根据审核结果更新流程状态。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 统一封装后的接口响应结果
+     */
+
     @PostMapping("/drafts/{draftId}/review")
     @RequireWorkflowPermission({WorkflowPermission.REVIEW_DECIDE})
     public ApiResponse<ContentDraftResponse> review(@PathVariable @Min(1) Long draftId,
@@ -129,6 +186,16 @@ public class ContentWorkflowController {
                                                     @CurrentWorkflowOperator WorkflowOperatorIdentity operator) {
         return ApiResponse.ok(contentWorkflowService.review(draftId, request, operator));
     }
+
+    /**
+     * 触发发布流程，并返回发布动作对应的处理结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param idempotencyKey 参数 idempotencyKey 对应的业务输入值
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 统一封装后的接口响应结果
+     */
 
     @PostMapping("/drafts/{draftId}/publish")
     @RequireWorkflowPermission({WorkflowPermission.PUBLISH_EXECUTE})
@@ -144,6 +211,15 @@ public class ContentWorkflowController {
         return ApiResponse.ok(contentWorkflowService.publish(draftId, normalized, operator));
     }
 
+    /**
+     * 执行回滚流程，将业务状态恢复到目标版本或阶段。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 统一封装后的接口响应结果
+     */
+
     @PostMapping("/drafts/{draftId}/rollback")
     @RequireWorkflowPermission({WorkflowPermission.ROLLBACK_EXECUTE})
     public ApiResponse<ContentDraftResponse> rollback(@PathVariable @Min(1) Long draftId,
@@ -153,9 +229,11 @@ public class ContentWorkflowController {
     }
 
     /**
-     * 发布差异预览：对比「当前草稿」与「基线已发布版本（默认为最新已发布版本）」之间的差异。
+     * 根据输入条件获取对应的业务数据详情。
      *
-     * <p>用于前端发布前的变更确认页。</p>
+     * @param draftId 草稿唯一标识
+     * @param basePublishedVersion 参数 basePublishedVersion 对应的业务输入值
+     * @return 统一封装后的接口响应结果
      */
     @GetMapping("/drafts/{draftId}/publish-diff")
     @RequireWorkflowPermission({WorkflowPermission.PUBLISH_DIFF_READ})
@@ -164,17 +242,40 @@ public class ContentWorkflowController {
         return ApiResponse.ok(contentWorkflowService.getPublishDiff(draftId, basePublishedVersion));
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 统一封装后的接口响应结果
+     */
+
     @GetMapping("/drafts/{draftId}/reviews")
     @RequireWorkflowPermission({WorkflowPermission.DRAFT_READ})
     public ApiResponse<List<ReviewRecordResponse>> listReviews(@PathVariable @Min(1) Long draftId) {
         return ApiResponse.ok(contentWorkflowService.listReviews(draftId));
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 统一封装后的接口响应结果
+     */
+
     @GetMapping("/drafts/{draftId}/snapshots")
     @RequireWorkflowPermission({WorkflowPermission.DRAFT_READ})
     public ApiResponse<List<ContentSnapshotResponse>> listSnapshots(@PathVariable @Min(1) Long draftId) {
         return ApiResponse.ok(contentWorkflowService.listSnapshots(draftId));
     }
+
+    /**
+     * 执行下线流程，使目标内容退出对外生效状态。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 统一封装后的接口响应结果
+     */
 
     @PostMapping("/drafts/{draftId}/offline")
     @RequireWorkflowPermission({WorkflowPermission.OFFLINE_EXECUTE})
@@ -184,6 +285,13 @@ public class ContentWorkflowController {
         return ApiResponse.ok(contentWorkflowService.offline(draftId, request, operator));
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 统一封装后的接口响应结果
+     */
+
     @GetMapping("/drafts/{draftId}/tasks")
     @RequireWorkflowPermission({WorkflowPermission.TASK_VIEW})
     public ApiResponse<List<PublishTaskResponse>> listPublishTasks(@PathVariable @Min(1) Long draftId) {
@@ -191,7 +299,10 @@ public class ContentWorkflowController {
     }
 
     /**
-     * 幂等发布命令列表：用于查看同一草稿的发布请求历史和命中情况。
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 统一封装后的接口响应结果
      */
     @GetMapping("/drafts/{draftId}/commands")
     @RequireWorkflowPermission({WorkflowPermission.COMMAND_VIEW})
@@ -199,11 +310,26 @@ public class ContentWorkflowController {
         return ApiResponse.ok(contentWorkflowService.listPublishCommands(draftId));
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 统一封装后的接口响应结果
+     */
+
     @GetMapping("/drafts/{draftId}/logs")
     @RequireWorkflowPermission({WorkflowPermission.LOG_VIEW})
     public ApiResponse<List<PublishLogResponse>> listPublishLogs(@PathVariable @Min(1) Long draftId) {
         return ApiResponse.ok(contentWorkflowService.listPublishLogs(draftId));
     }
+
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @param traceId 链路追踪标识
+     * @return 统一封装后的接口响应结果
+     */
 
     @GetMapping("/drafts/{draftId}/logs/timeline")
     @RequireWorkflowPermission({WorkflowPermission.LOG_VIEW})
@@ -211,6 +337,14 @@ public class ContentWorkflowController {
                                                                         @RequestParam("traceId") String traceId) {
         return ApiResponse.ok(contentWorkflowService.listPublishLogTimeline(draftId, traceId));
     }
+
+    /**
+     * 根据输入条件获取对应的业务数据详情。
+     *
+     * @param draftId 草稿唯一标识
+     * @param publishedVersion 参数 publishedVersion 对应的业务输入值
+     * @return 统一封装后的接口响应结果
+     */
 
     @GetMapping("/drafts/{draftId}/logs/publish-timeline")
     @RequireWorkflowPermission({WorkflowPermission.LOG_VIEW})

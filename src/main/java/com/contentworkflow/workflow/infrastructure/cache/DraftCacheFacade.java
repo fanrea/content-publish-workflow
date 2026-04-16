@@ -10,26 +10,30 @@ import java.util.Optional;
 import java.util.function.Supplier;
 
 /**
- * 草稿缓存门面。
- *
- * <p>当前项目主要通过 Repository 上的 `@Cacheable/@CacheEvict` 透明接入缓存。
- * 这个门面类用于未来需要显式控制缓存的场景，例如批量预热、异步事件驱动失效，
- * 或者对高频接口做更细粒度的缓存封装。</p>
+ * 当前模块中的核心类型，用于承载对应场景下的业务数据或处理能力。
  */
 @Component
 public class DraftCacheFacade {
 
     private final CacheManager cacheManager;
 
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     *
+     * @param cacheManager 参数 cacheManager 对应的业务输入值
+     */
+
     public DraftCacheFacade(CacheManager cacheManager) {
         this.cacheManager = cacheManager;
     }
 
     /**
-     * 按 draftId 获取草稿详情，并提供一个回源加载器。
+     * 根据输入条件获取对应的业务数据详情。
      *
-     * <p>缓存只做 best-effort；获取或写入失败时不抛异常。
-     * 同时不建议缓存 null，避免把“短暂查不到”的状态放大。</p>
+     * @param draftId 草稿唯一标识
+     * @param type 参数 type 对应的业务输入值
+     * @param loader 参数 loader 对应的业务输入值
+     * @return 匹配到结果时返回对应对象，否则返回空的 Optional 容器
      */
     public <T> Optional<T> getDraftDetailById(Long draftId, Class<T> type, Supplier<Optional<T>> loader) {
         if (draftId == null) {
@@ -53,10 +57,10 @@ public class DraftCacheFacade {
     }
 
     /**
-     * 草稿发生变更后，显式驱逐详情缓存。
+     * 处理 evict draft detail 相关逻辑，并返回对应的执行结果。
      *
-     * <p>正常情况下业务层不需要主动调用，因为 `Repository.save` 已经带注解驱逐。
-     * 这里主要服务于异步事件驱动的缓存失效场景。</p>
+     * @param draftId 草稿唯一标识
+     * @param bizNo 业务编号
      */
     public void evictDraftDetail(Long draftId, String bizNo) {
         Cache byId = cacheManager.getCache(CacheNames.DRAFT_DETAIL_BY_ID);
@@ -69,7 +73,9 @@ public class DraftCacheFacade {
         }
     }
 
-    /** 驱逐草稿状态计数缓存，通常用于状态变更后。 */
+    /**
+     * 处理 evict draft status count 相关逻辑，并返回对应的执行结果。
+     */
     public void evictDraftStatusCount() {
         Cache cache = cacheManager.getCache(CacheNames.DRAFT_STATUS_COUNT);
         if (cache != null) {

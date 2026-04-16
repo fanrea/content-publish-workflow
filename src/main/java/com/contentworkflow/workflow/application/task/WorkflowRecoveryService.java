@@ -32,7 +32,7 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Operational recovery service for manual retry / requeue actions.
+ * 应用服务实现，负责组织领域对象、存储组件与外部能力完成业务流程编排。
  */
 @Service
 public class WorkflowRecoveryService {
@@ -50,6 +50,14 @@ public class WorkflowRecoveryService {
     private final OutboxEventRepository outboxEventRepository;
     private final CacheManager cacheManager;
 
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     *
+     * @param workflowStore 参数 workflowStore 对应的业务输入值
+     * @param outboxEventRepository 参数 outboxEventRepository 对应的业务输入值
+     * @param cacheManager 参数 cacheManager 对应的业务输入值
+     */
+
     public WorkflowRecoveryService(WorkflowStore workflowStore,
                                    OutboxEventRepository outboxEventRepository,
                                    CacheManager cacheManager) {
@@ -57,6 +65,14 @@ public class WorkflowRecoveryService {
         this.outboxEventRepository = outboxEventRepository;
         this.cacheManager = cacheManager;
     }
+
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @param statuses 参数 statuses 对应的业务输入值
+     * @return 符合条件的结果集合
+     */
 
     @Transactional(readOnly = true)
     public List<RecoverablePublishTaskResponse> listRecoverablePublishTasks(Long draftId,
@@ -71,6 +87,15 @@ public class WorkflowRecoveryService {
                 .map(task -> toRecoverableTaskResponse(task, draft))
                 .toList();
     }
+
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @param statuses 参数 statuses 对应的业务输入值
+     * @param limit 参数 limit 对应的业务输入值
+     * @return 符合条件的结果集合
+     */
 
     @Transactional(readOnly = true)
     public List<RecoverableOutboxEventResponse> listRecoverableOutboxEvents(Long draftId,
@@ -101,6 +126,16 @@ public class WorkflowRecoveryService {
                 .toList();
     }
 
+    /**
+     * 处理 retry publish task 相关逻辑，并返回对应的执行结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param taskId 相关业务对象的唯一标识
+     * @param remark 参数 remark 对应的业务输入值
+     * @param operator 当前操作人身份信息
+     * @return 方法处理后的结果对象
+     */
+
     @Transactional
     public ManualRecoveryResponse retryPublishTask(Long draftId,
                                                    Long taskId,
@@ -115,6 +150,15 @@ public class WorkflowRecoveryService {
 
         return retryPublishTaskInternal(draft, task, normalizeRemark(remark), operator);
     }
+
+    /**
+     * 处理 retry current version publish tasks 相关逻辑，并返回对应的执行结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param remark 参数 remark 对应的业务输入值
+     * @param operator 当前操作人身份信息
+     * @return 符合条件的结果集合
+     */
 
     @Transactional
     public List<ManualRecoveryResponse> retryCurrentVersionPublishTasks(Long draftId,
@@ -150,6 +194,15 @@ public class WorkflowRecoveryService {
                 .build());
         return responses;
     }
+
+    /**
+     * 处理 retry outbox event 相关逻辑，并返回对应的执行结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param outboxEventId 相关业务对象的唯一标识
+     * @param remark 参数 remark 对应的业务输入值
+     * @param operator 当前操作人身份信息
+     * @return 方法处理后的结果对象
+     */
 
     @Transactional
     public ManualRecoveryResponse retryOutboxEvent(Long outboxEventId,
@@ -209,6 +262,16 @@ public class WorkflowRecoveryService {
         );
     }
 
+    /**
+     * 处理 requeue dead publish task 相关逻辑，并返回对应的执行结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param taskId 相关业务对象的唯一标识
+     * @param remark 参数 remark 对应的业务输入值
+     * @param operator 当前操作人身份信息
+     * @return 方法处理后的结果对象
+     */
+
     @Transactional
     public ManualRecoveryResponse requeueDeadPublishTask(Long draftId,
                                                          Long taskId,
@@ -217,12 +280,31 @@ public class WorkflowRecoveryService {
         return retryPublishTask(draftId, taskId, remark, operator);
     }
 
+    /**
+     * 处理 requeue dead outbox event 相关逻辑，并返回对应的执行结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param outboxEventId 相关业务对象的唯一标识
+     * @param remark 参数 remark 对应的业务输入值
+     * @param operator 当前操作人身份信息
+     * @return 方法处理后的结果对象
+     */
+
     @Transactional
     public ManualRecoveryResponse requeueDeadOutboxEvent(Long outboxEventId,
                                                          String remark,
                                                          WorkflowOperatorIdentity operator) {
         return retryOutboxEvent(outboxEventId, remark, operator);
     }
+
+    /**
+     * 处理 retry publish task internal 相关逻辑，并返回对应的执行结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draft 草稿对象
+     * @param task 任务对象
+     * @param normalizedRemark 参数 normalizedRemark 对应的业务输入值
+     * @param operator 当前操作人身份信息
+     * @return 方法处理后的结果对象
+     */
 
     private ManualRecoveryResponse retryPublishTaskInternal(ContentDraft draft,
                                                             PublishTask task,
@@ -276,6 +358,13 @@ public class WorkflowRecoveryService {
         );
     }
 
+    /**
+     * 处理 resume draft publishing if needed 相关逻辑，并返回对应的执行结果。
+     *
+     * @param draft 草稿对象
+     * @param now 参数 now 对应的业务输入值
+     */
+
     private void resumeDraftPublishingIfNeeded(ContentDraft draft, LocalDateTime now) {
         if (draft.getStatus() == WorkflowStatus.PUBLISH_FAILED) {
             draft.setStatus(WorkflowStatus.PUBLISHING);
@@ -283,6 +372,14 @@ public class WorkflowRecoveryService {
             workflowStore.updateDraft(draft);
         }
     }
+
+    /**
+     * 处理 to recoverable task response 相关逻辑，并返回对应的执行结果。
+     *
+     * @param task 任务对象
+     * @param draft 草稿对象
+     * @return 方法处理后的结果对象
+     */
 
     private RecoverablePublishTaskResponse toRecoverableTaskResponse(PublishTask task, ContentDraft draft) {
         boolean actionable = RECOVERABLE_TASK_STATUSES.contains(task.getStatus())
@@ -305,6 +402,13 @@ public class WorkflowRecoveryService {
         );
     }
 
+    /**
+     * 处理 to recoverable outbox event response 相关逻辑，并返回对应的执行结果。
+     *
+     * @param event 事件对象
+     * @return 方法处理后的结果对象
+     */
+
     private RecoverableOutboxEventResponse toRecoverableOutboxEventResponse(OutboxEventEntity event) {
         return new RecoverableOutboxEventResponse(
                 event.getId(),
@@ -325,6 +429,13 @@ public class WorkflowRecoveryService {
         );
     }
 
+    /**
+     * 对输入值进行标准化处理，便于后续统一使用。
+     *
+     * @param statuses 参数 statuses 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
+
     private EnumSet<PublishTaskStatus> normalizeTaskStatuses(Collection<PublishTaskStatus> statuses) {
         if (statuses == null || statuses.isEmpty()) {
             return EnumSet.copyOf(RECOVERABLE_TASK_STATUSES);
@@ -335,6 +446,13 @@ public class WorkflowRecoveryService {
         }
         return normalized;
     }
+
+    /**
+     * 对输入值进行标准化处理，便于后续统一使用。
+     *
+     * @param statuses 参数 statuses 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
 
     private EnumSet<OutboxEventStatus> normalizeOutboxStatuses(Collection<OutboxEventStatus> statuses) {
         if (statuses == null || statuses.isEmpty()) {
@@ -347,6 +465,12 @@ public class WorkflowRecoveryService {
         return normalized;
     }
 
+    /**
+     * 处理 evict dead outbox scan marker 相关逻辑，并返回对应的执行结果。
+     *
+     * @param event 事件对象
+     */
+
     private void evictDeadOutboxScanMarker(OutboxEventEntity event) {
         Cache cache = cacheManager.getCache(CacheNames.DEAD_OUTBOX_SCAN_MARKER);
         if (cache == null) {
@@ -355,6 +479,13 @@ public class WorkflowRecoveryService {
         String markerKey = event.getEventId() == null ? "outbox:" + event.getId() : event.getEventId();
         cache.evict(markerKey);
     }
+
+    /**
+     * 处理 parse draft id 相关逻辑，并返回对应的执行结果。
+     *
+     * @param event 事件对象
+     * @return 统计值或数量结果
+     */
 
     private Long parseDraftId(OutboxEventEntity event) {
         if (!"content_draft".equals(event.getAggregateType())) {
@@ -367,10 +498,25 @@ public class WorkflowRecoveryService {
         }
     }
 
+    /**
+     * 构建当前场景所需的结果对象或配置内容。
+     *
+     * @param base 参数 base 对应的业务输入值
+     * @param remark 参数 remark 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
+
     private String buildRemark(String base, String remark) {
         String normalized = normalizeRemark(remark);
         return normalized == null ? base : base + " | " + normalized;
     }
+
+    /**
+     * 对输入值进行标准化处理，便于后续统一使用。
+     *
+     * @param remark 参数 remark 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
 
     private String normalizeRemark(String remark) {
         if (remark == null || remark.isBlank()) {

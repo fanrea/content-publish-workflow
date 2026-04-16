@@ -3,7 +3,7 @@ package com.contentworkflow.workflow.interfaces.vo;
 import com.contentworkflow.workflow.domain.enums.WorkflowStatus;
 
 /**
- * 草稿状态计数（用于列表页 Tab/Badge）。
+ * 接口层响应模型，用于向调用方返回结构化的业务结果。
  */
 public record DraftStatusCountResponse(
         WorkflowStatus status,

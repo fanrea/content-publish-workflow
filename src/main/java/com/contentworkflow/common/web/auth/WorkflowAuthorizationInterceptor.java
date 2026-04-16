@@ -15,14 +15,7 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Resolve operator identity from headers and enforce role-based access on protected endpoints.
- *
- * <p>说明：</p>
- * <ul>
- *     <li>鉴权只发生在标注了 {@link RequireWorkflowRole} 的接口</li>
- *     <li>解析出的操作人会放在 request attribute 里，供 {@link CurrentWorkflowOperatorArgumentResolver} 注入</li>
- *     <li>支持单角色 {@code X-Workflow-Role} 与多角色 {@code X-Workflow-Roles}</li>
- * </ul>
+ * 拦截器组件，用于在请求处理链路中执行鉴权、上下文注入和审计控制。
  */
 @Component
 public class WorkflowAuthorizationInterceptor implements HandlerInterceptor {
@@ -39,11 +32,27 @@ public class WorkflowAuthorizationInterceptor implements HandlerInterceptor {
     private final WorkflowOperatorResolver operatorResolver;
     private final WorkflowPermissionPolicy permissionPolicy;
 
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     *
+     * @param operatorResolver 参数 operatorResolver 对应的业务输入值
+     * @param permissionPolicy 参数 permissionPolicy 对应的业务输入值
+     */
+
     public WorkflowAuthorizationInterceptor(WorkflowOperatorResolver operatorResolver,
                                             WorkflowPermissionPolicy permissionPolicy) {
         this.operatorResolver = operatorResolver;
         this.permissionPolicy = permissionPolicy;
     }
+
+    /**
+     * 处理 pre handle 相关逻辑，并返回对应的执行结果。
+     *
+     * @param request 封装业务输入的请求对象
+     * @param response 响应对象
+     * @param handler 当前处理器对象
+     * @return 返回 true 表示条件成立或处理成功，返回 false 表示条件不成立或未命中
+     */
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
@@ -103,10 +112,26 @@ public class WorkflowAuthorizationInterceptor implements HandlerInterceptor {
         return true;
     }
 
+    /**
+     * 处理 after completion 相关逻辑，并返回对应的执行结果。
+     *
+     * @param request 封装业务输入的请求对象
+     * @param response 响应对象
+     * @param handler 当前处理器对象
+     * @param ex 异常对象
+     */
+
     @Override
     public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) {
         WorkflowAuditContextHolder.clear();
     }
+
+    /**
+     * 解析输入信息并生成当前流程所需的结构化结果。
+     *
+     * @param handlerMethod 参数 handlerMethod 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
 
     private RequireWorkflowPermission resolvePermissionRequirement(HandlerMethod handlerMethod) {
         RequireWorkflowPermission methodLevel = AnnotatedElementUtils.findMergedAnnotation(
@@ -122,6 +147,13 @@ public class WorkflowAuthorizationInterceptor implements HandlerInterceptor {
         );
     }
 
+    /**
+     * 解析输入信息并生成当前流程所需的结构化结果。
+     *
+     * @param handlerMethod 参数 handlerMethod 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
+
     private RequireWorkflowRole resolveRoleRequirement(HandlerMethod handlerMethod) {
         RequireWorkflowRole methodLevel = AnnotatedElementUtils.findMergedAnnotation(
                 handlerMethod.getMethod(),
@@ -135,6 +167,13 @@ public class WorkflowAuthorizationInterceptor implements HandlerInterceptor {
                 RequireWorkflowRole.class
         );
     }
+
+    /**
+     * 对输入值进行标准化处理，便于后续统一使用。
+     *
+     * @param value 待处理的原始值
+     * @return 方法处理后的结果对象
+     */
 
     private String normalizeHeader(String value) {
         if (value == null || value.isBlank()) {

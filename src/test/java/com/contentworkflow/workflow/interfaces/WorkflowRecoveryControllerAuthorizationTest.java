@@ -30,12 +30,20 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+/**
+ * 测试类，用于验证当前模块在特定场景下的行为、状态变化或边界条件。
+ */
+
 class WorkflowRecoveryControllerAuthorizationTest {
 
     private static final String OP_ID = "10001";
     private static final String OP_NAME = "alice";
 
     private MockMvc mockMvc;
+
+    /**
+     * 执行测试前的初始化逻辑，为后续测试用例准备运行环境。
+     */
 
     @BeforeEach
     void setUp() {
@@ -95,6 +103,10 @@ class WorkflowRecoveryControllerAuthorizationTest {
                 .build();
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     */
+
     @Test
     void listRecoverablePublishTasks_shouldRequireTaskViewPermission() throws Exception {
         mockMvc.perform(get("/api/workflows/drafts/1/recovery/tasks"))
@@ -116,6 +128,10 @@ class WorkflowRecoveryControllerAuthorizationTest {
                 .andExpect(jsonPath("$.code").value("OK"));
     }
 
+    /**
+     * 处理 retry publish task_should require manual recovery permission 相关逻辑，并返回对应的执行结果。
+     */
+
     @Test
     void retryPublishTask_shouldRequireManualRecoveryPermission() throws Exception {
         mockMvc.perform(post("/api/workflows/drafts/1/tasks/2/manual-retry"))
@@ -136,6 +152,10 @@ class WorkflowRecoveryControllerAuthorizationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"));
     }
+
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     */
 
     @Test
     void listRecoverableOutboxEvents_shouldRequireAdminRole() throws Exception {

@@ -13,31 +13,71 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * RabbitMQ topology for publish side-effect events.
+ * 配置类，用于声明当前模块运行所需的 Bean、策略或中间件集成设置。
  */
 @Configuration
 @ConditionalOnProperty(prefix = "workflow.outbox.topology", name = "enabled", havingValue = "true")
 public class WorkflowRabbitTopologyConfiguration {
+
+    /**
+     * 处理 workflow event exchange 相关逻辑，并返回对应的执行结果。
+     *
+     * @param props 配置属性对象
+     * @return 方法处理后的结果对象
+     */
 
     @Bean
     public TopicExchange workflowEventExchange(WorkflowMessagingProperties props) {
         return new TopicExchange(props.getExchange(), true, false);
     }
 
+    /**
+     * 处理 workflow search index queue 相关逻辑，并返回对应的执行结果。
+     *
+     * @param props 配置属性对象
+     * @return 方法处理后的结果对象
+     */
+
     @Bean
     public Queue workflowSearchIndexQueue(WorkflowMessagingProperties props) {
         return new Queue(props.getTopology().getSearchIndexQueue(), true);
     }
+
+    /**
+     * 处理 workflow read model queue 相关逻辑，并返回对应的执行结果。
+     *
+     * @param props 配置属性对象
+     * @return 方法处理后的结果对象
+     */
 
     @Bean
     public Queue workflowReadModelQueue(WorkflowMessagingProperties props) {
         return new Queue(props.getTopology().getReadModelQueue(), true);
     }
 
+    /**
+     * 处理 workflow notification queue 相关逻辑，并返回对应的执行结果。
+     *
+     * @param props 配置属性对象
+     * @return 方法处理后的结果对象
+     */
+
     @Bean
     public Queue workflowNotificationQueue(WorkflowMessagingProperties props) {
         return new Queue(props.getTopology().getNotificationQueue(), true);
     }
+
+    /**
+     * 处理 workflow rabbit declarables 相关逻辑，并返回对应的执行结果。
+     *
+     * @param props 配置属性对象
+     * @param routingKeyResolver 参数 routingKeyResolver 对应的业务输入值
+     * @param workflowEventExchange 参数 workflowEventExchange 对应的业务输入值
+     * @param workflowSearchIndexQueue 参数 workflowSearchIndexQueue 对应的业务输入值
+     * @param workflowReadModelQueue 参数 workflowReadModelQueue 对应的业务输入值
+     * @param workflowNotificationQueue 参数 workflowNotificationQueue 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
 
     @Bean
     public Declarables workflowRabbitDeclarables(WorkflowMessagingProperties props,
@@ -66,6 +106,13 @@ public class WorkflowRabbitTopologyConfiguration {
                 notificationBinding
         );
     }
+
+    /**
+     * 处理 workflow rabbit admin 相关逻辑，并返回对应的执行结果。
+     *
+     * @param connectionFactory 参数 connectionFactory 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
 
     @Bean
     public RabbitAdmin workflowRabbitAdmin(ConnectionFactory connectionFactory) {

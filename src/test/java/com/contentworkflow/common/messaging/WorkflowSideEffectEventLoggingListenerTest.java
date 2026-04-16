@@ -17,12 +17,20 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+/**
+ * 测试类，用于验证当前模块在特定场景下的行为、状态变化或边界条件。
+ */
+
 class WorkflowSideEffectEventLoggingListenerTest {
 
     private WorkflowStore store;
     private AtomicInteger readModelGatewayCalls;
     private WorkflowSideEffectEventLoggingListener listener;
     private ObjectMapper objectMapper;
+
+    /**
+     * 执行测试前的初始化逻辑，为后续测试用例准备运行环境。
+     */
 
     @BeforeEach
     void setUp() {
@@ -46,6 +54,10 @@ class WorkflowSideEffectEventLoggingListenerTest {
                 consumerService
         );
     }
+
+    /**
+     * 处理 duplicate_message_should_only_be_consumed_once 相关逻辑，并返回对应的执行结果。
+     */
 
     @Test
     void duplicate_message_should_only_be_consumed_once() throws Exception {
@@ -75,6 +87,10 @@ class WorkflowSideEffectEventLoggingListenerTest {
                 .count();
         assertEquals(1L, acceptedLogs);
     }
+
+    /**
+     * 处理 seed draft 相关逻辑，并返回对应的执行结果。
+     */
 
     private void seedDraft() {
         ContentDraft draft = ContentDraft.builder()

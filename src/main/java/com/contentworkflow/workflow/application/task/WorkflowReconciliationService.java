@@ -24,10 +24,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * Reconciliation scans triggered by XXL-Job.
- *
- * <p>These scans do not replace worker retry logic. They are the operational safety net for items
- * that already reached DEAD state and now require manual intervention or follow-up compensation.</p>
+ * 应用服务实现，负责组织领域对象、存储组件与外部能力完成业务流程编排。
  */
 @Service
 public class WorkflowReconciliationService {
@@ -40,6 +37,14 @@ public class WorkflowReconciliationService {
     private final OutboxEventRepository outboxEventRepository;
     private final CacheManager cacheManager;
 
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     *
+     * @param workflowStore 参数 workflowStore 对应的业务输入值
+     * @param outboxEventRepository 参数 outboxEventRepository 对应的业务输入值
+     * @param cacheManager 参数 cacheManager 对应的业务输入值
+     */
+
     public WorkflowReconciliationService(WorkflowStore workflowStore,
                                          OutboxEventRepository outboxEventRepository,
                                          CacheManager cacheManager) {
@@ -47,6 +52,13 @@ public class WorkflowReconciliationService {
         this.outboxEventRepository = outboxEventRepository;
         this.cacheManager = cacheManager;
     }
+
+    /**
+     * 处理 scan dead publish tasks 相关逻辑，并返回对应的执行结果。
+     *
+     * @param limit 参数 limit 对应的业务输入值
+     * @return 统计值或数量结果
+     */
 
     @Transactional
     public int scanDeadPublishTasks(int limit) {
@@ -89,6 +101,13 @@ public class WorkflowReconciliationService {
         return created;
     }
 
+    /**
+     * 处理 scan dead outbox events 相关逻辑，并返回对应的执行结果。
+     *
+     * @param limit 参数 limit 对应的业务输入值
+     * @return 统计值或数量结果
+     */
+
     @Transactional
     public int scanDeadOutboxEvents(int limit) {
         int safeLimit = Math.max(1, limit);
@@ -116,6 +135,12 @@ public class WorkflowReconciliationService {
         }
         return discovered;
     }
+
+    /**
+     * 处理 try append draft audit for outbox event 相关逻辑，并返回对应的执行结果。
+     *
+     * @param event 事件对象
+     */
 
     private void tryAppendDraftAuditForOutboxEvent(OutboxEventEntity event) {
         Long draftId = parseDraftId(event);
@@ -151,12 +176,26 @@ public class WorkflowReconciliationService {
                 .build());
     }
 
+    /**
+     * 处理 parse draft id 相关逻辑，并返回对应的执行结果。
+     *
+     * @param event 事件对象
+     * @return 统计值或数量结果
+     */
+
     private Long parseDraftId(OutboxEventEntity event) {
         if ("content_draft".equals(event.getAggregateType())) {
             return parseLongQuietly(event.getAggregateId());
         }
         return null;
     }
+
+    /**
+     * 处理 parse long quietly 相关逻辑，并返回对应的执行结果。
+     *
+     * @param raw 参数 raw 对应的业务输入值
+     * @return 统计值或数量结果
+     */
 
     private Long parseLongQuietly(String raw) {
         if (raw == null || raw.isBlank()) {
@@ -169,12 +208,26 @@ public class WorkflowReconciliationService {
         }
     }
 
+    /**
+     * 构建当前场景所需的结果对象或配置内容。
+     *
+     * @param task 任务对象
+     * @return 方法处理后的结果对象
+     */
+
     private String buildTaskMarker(PublishTask task) {
         return "taskId=" + task.getId()
                 + ";taskType=" + task.getTaskType()
                 + ";version=" + task.getPublishedVersion()
                 + ";error=" + safe(task.getErrorMessage());
     }
+
+    /**
+     * 处理 safe 相关逻辑，并返回对应的执行结果。
+     *
+     * @param value 待处理的原始值
+     * @return 方法处理后的结果对象
+     */
 
     private String safe(String value) {
         return value == null ? "" : value;

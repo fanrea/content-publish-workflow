@@ -1,7 +1,6 @@
-﻿-- Development reset schema (MySQL 8.x).
--- This is a single-run script intended for local dev and review. It is not a migration system.
--- For migrations, introduce Flyway/Liquibase later.
--- Note: this schema may include extra optional columns to support retry/compensation/idempotency.
+-- Development reset schema for MySQL 8.x.
+-- This script is intended for local setup and review, not versioned migrations.
+-- Use Flyway or Liquibase for production migrations.
 
 SET NAMES utf8mb4;
 
@@ -27,7 +26,6 @@ CREATE TABLE content_draft (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_content_draft_biz_no (biz_no),
-    -- 列表页常见筛选：按状态过滤，并按更新时间或创建时间排序
     KEY idx_content_draft_status (workflow_status),
     KEY idx_content_draft_updated_at (updated_at),
     KEY idx_content_draft_created_at (created_at),
@@ -74,9 +72,7 @@ CREATE TABLE content_publish_task (
     task_status VARCHAR(32) NOT NULL,
     retry_times INT NOT NULL DEFAULT 0,
     error_message VARCHAR(500) NULL,
-    -- 下一次可执行时间：失败后用于延迟重试（backoff）
     next_run_at DATETIME NULL,
-    -- 领取锁字段：用于多实例 worker 去重，可配合行锁或条件更新
     locked_by VARCHAR(64) NULL,
     locked_at DATETIME NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -136,8 +132,6 @@ CREATE TABLE content_publish_log (
         FOREIGN KEY (draft_id) REFERENCES content_draft(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Outbox event table (DB -> Relay -> RabbitMQ).
--- 说明：仅生成 SQL，不会被应用自动执行；用于 MySQL 环境下的建表/评审。
 CREATE TABLE workflow_outbox_event (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     event_id VARCHAR(64) NOT NULL,

@@ -6,9 +6,7 @@ import com.contentworkflow.workflow.domain.enums.PublishTaskType;
 import java.util.List;
 
 /**
- * Publish diff preview used by the confirmation page before a release.
- *
- * <p>The current version compares the three editable draft fields: title, summary, and body.</p>
+ * 接口层响应模型，用于向调用方返回结构化的业务结果。
  */
 public record PublishDiffResponse(
         Long draftId,
@@ -22,6 +20,10 @@ public record PublishDiffResponse(
         List<ChangeScopeSummary> scopes,
         List<PlannedTask> plannedTasks
 ) {
+    /**
+     * 不可变数据模型，用于以紧凑形式承载当前场景下需要传递的数据内容。
+     */
+
     public record FieldDiff(
             String field,
             boolean changed,
@@ -32,12 +34,20 @@ public record PublishDiffResponse(
     ) {
     }
 
+    /**
+     * 不可变数据模型，用于以紧凑形式承载当前场景下需要传递的数据内容。
+     */
+
     public record ChangeScopeSummary(
             PublishChangeScope scope,
             boolean changed,
             String reason
     ) {
     }
+
+    /**
+     * 不可变数据模型，用于以紧凑形式承载当前场景下需要传递的数据内容。
+     */
 
     public record PlannedTask(
             PublishTaskType taskType,

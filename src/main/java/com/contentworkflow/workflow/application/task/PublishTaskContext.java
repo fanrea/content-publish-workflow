@@ -6,9 +6,7 @@ import com.contentworkflow.workflow.domain.entity.ContentSnapshot;
 import com.contentworkflow.workflow.domain.entity.PublishTask;
 
 /**
- * Execution context for a publish task.
- *
- * <p>To keep the worker testable, all required data is passed in explicitly.</p>
+ * 不可变数据模型，用于以紧凑形式承载当前场景下需要传递的数据内容。
  */
 public record PublishTaskContext(
         ContentDraft draft,

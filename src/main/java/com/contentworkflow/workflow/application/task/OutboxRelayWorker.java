@@ -1,4 +1,4 @@
-﻿package com.contentworkflow.workflow.application.task;
+package com.contentworkflow.workflow.application.task;
 
 import com.contentworkflow.common.messaging.WorkflowMessagingProperties;
 import com.contentworkflow.common.messaging.outbox.OutboxEventEntity;
@@ -24,11 +24,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Outbox relay worker: polls outbox table and sends messages to RabbitMQ.
- *
- * <p>Key idea: business code only writes to outbox; relay is responsible for delivery and retries.</p>
- *
- * <p>Disabled by default. Enable via {@code workflow.outbox.relay.enabled=true}.</p>
+ * 后台工作组件，用于异步执行任务、投递消息或处理补偿逻辑。
  */
 @Component
 @ConditionalOnProperty(prefix = "workflow.outbox.relay", name = "enabled", havingValue = "true")
@@ -46,6 +42,15 @@ public class OutboxRelayWorker {
     @org.springframework.beans.factory.annotation.Value("${workflow.scheduler.local.enabled:true}")
     private boolean localScheduleEnabled;
 
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     *
+     * @param repo 参数 repo 对应的业务输入值
+     * @param rabbitTemplate 参数 rabbitTemplate 对应的业务输入值
+     * @param objectMapper 参数 objectMapper 对应的业务输入值
+     * @param props 配置属性对象
+     */
+
     public OutboxRelayWorker(OutboxEventRepository repo,
                              RabbitTemplate rabbitTemplate,
                              ObjectMapper objectMapper,
@@ -55,6 +60,10 @@ public class OutboxRelayWorker {
         this.objectMapper = objectMapper;
         this.props = props;
     }
+
+    /**
+     * 处理 poll once 相关逻辑，并返回对应的执行结果。
+     */
 
     public void pollOnce() {
         LocalDateTime now = LocalDateTime.now();
@@ -69,6 +78,10 @@ public class OutboxRelayWorker {
         }
     }
 
+    /**
+     * 处理 scheduled poll once 相关逻辑，并返回对应的执行结果。
+     */
+
     @Scheduled(fixedDelayString = "${workflow.outbox.relay.pollDelayMs:1000}")
     public void scheduledPollOnce() {
         if (!localScheduleEnabled) {
@@ -76,6 +89,15 @@ public class OutboxRelayWorker {
         }
         pollOnce();
     }
+
+    /**
+     * 处理 claim batch 相关逻辑，并返回对应的执行结果。
+     *
+     * @param now 参数 now 对应的业务输入值
+     * @param lockExpiredBefore 参数 lockExpiredBefore 对应的业务输入值
+     * @param batchSize 参数 batchSize 对应的业务输入值
+     * @return 符合条件的结果集合
+     */
 
     @Transactional
     protected List<ClaimedEvent> claimBatch(LocalDateTime now, LocalDateTime lockExpiredBefore, int batchSize) {
@@ -100,6 +122,13 @@ public class OutboxRelayWorker {
         return rows.stream().map(ClaimedEvent::of).toList();
     }
 
+    /**
+     * 处理 deliver one 相关逻辑，并返回对应的执行结果。
+     *
+     * @param e 参数 e 对应的业务输入值
+     * @param now 参数 now 对应的业务输入值
+     */
+
     protected void deliverOne(ClaimedEvent e, LocalDateTime now) {
         try {
             Message msg = toMessage(e);
@@ -109,6 +138,13 @@ public class OutboxRelayWorker {
             markFailedOrDead(e.id(), now, ex);
         }
     }
+
+    /**
+     * 处理 mark sent 相关逻辑，并返回对应的执行结果。
+     *
+     * @param id 主键标识
+     * @param now 参数 now 对应的业务输入值
+     */
 
     @Transactional
     protected void markSent(Long id, LocalDateTime now) {
@@ -128,6 +164,14 @@ public class OutboxRelayWorker {
         row.setLockedAt(null);
         repo.save(row);
     }
+
+    /**
+     * 处理 mark failed or dead 相关逻辑，并返回对应的执行结果。
+     *
+     * @param id 主键标识
+     * @param now 参数 now 对应的业务输入值
+     * @param ex 异常对象
+     */
 
     @Transactional
     protected void markFailedOrDead(Long id, LocalDateTime now, Exception ex) {
@@ -160,6 +204,13 @@ public class OutboxRelayWorker {
         row.setLockedAt(null);
         repo.save(row);
     }
+
+    /**
+     * 处理 to message 相关逻辑，并返回对应的执行结果。
+     *
+     * @param e 参数 e 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
 
     private Message toMessage(ClaimedEvent e) {
         MessageProperties props = new MessageProperties();
@@ -195,6 +246,13 @@ public class OutboxRelayWorker {
         return new Message(body, props);
     }
 
+    /**
+     * 处理 short error 相关逻辑，并返回对应的执行结果。
+     *
+     * @param e 参数 e 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
+
     private static String shortError(Exception e) {
         String msg = e.getMessage();
         if (msg == null || msg.isBlank()) {
@@ -205,7 +263,8 @@ public class OutboxRelayWorker {
     }
 
     /**
-     * 杞婚噺 DTO锛氶伩鍏嶆妸 JPA Entity 甯﹀嚭浜嬪姟鑼冨洿锛堝噺灏戞剰澶栨噿鍔犺浇/鑴忓啓椋庨櫓锛夈€?     */
+     * 不可变数据模型，用于以紧凑形式承载当前场景下需要传递的数据内容。
+     */
     private record ClaimedEvent(
             Long id,
             String eventId,
@@ -218,6 +277,13 @@ public class OutboxRelayWorker {
             String payloadJson,
             String headersJson
     ) {
+        /**
+         * 处理 of 相关逻辑，并返回对应的执行结果。
+         *
+         * @param e 参数 e 对应的业务输入值
+         * @return 方法处理后的结果对象
+         */
+
         static ClaimedEvent of(OutboxEventEntity e) {
             return new ClaimedEvent(
                     e.getId(),

@@ -29,7 +29,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
 /**
- * Operational recovery endpoints for manual retry / requeue.
+ * 接口层控制器，负责接收 HTTP 请求、完成参数校验与权限约束，并将业务处理委托给应用服务。
  */
 @RestController
 @Validated
@@ -38,9 +38,23 @@ public class WorkflowRecoveryController {
 
     private final WorkflowRecoveryService workflowRecoveryService;
 
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     *
+     * @param workflowRecoveryService 参数 workflowRecoveryService 对应的业务输入值
+     */
+
     public WorkflowRecoveryController(WorkflowRecoveryService workflowRecoveryService) {
         this.workflowRecoveryService = workflowRecoveryService;
     }
+
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @param statuses 参数 statuses 对应的业务输入值
+     * @return 统一封装后的接口响应结果
+     */
 
     @GetMapping("/drafts/{draftId}/recovery/tasks")
     @RequireWorkflowPermission({WorkflowPermission.TASK_VIEW})
@@ -51,6 +65,16 @@ public class WorkflowRecoveryController {
         return ApiResponse.ok(workflowRecoveryService.listRecoverablePublishTasks(draftId, statuses));
     }
 
+    /**
+     * 处理 retry publish task 相关逻辑，并返回对应的执行结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param taskId 相关业务对象的唯一标识
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 统一封装后的接口响应结果
+     */
+
     @PostMapping("/drafts/{draftId}/tasks/{taskId}/manual-retry")
     @RequireWorkflowPermission({WorkflowPermission.TASK_MANUAL_REQUEUE})
     public ApiResponse<ManualRecoveryResponse> retryPublishTask(@PathVariable @Min(1) Long draftId,
@@ -60,6 +84,15 @@ public class WorkflowRecoveryController {
         String remark = request == null ? null : request.remark();
         return ApiResponse.ok(workflowRecoveryService.retryPublishTask(draftId, taskId, remark, operator));
     }
+
+    /**
+     * 处理 retry current version publish tasks 相关逻辑，并返回对应的执行结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 统一封装后的接口响应结果
+     */
 
     @PostMapping("/drafts/{draftId}/tasks/manual-retry-current-version")
     @RequireWorkflowPermission({WorkflowPermission.TASK_MANUAL_REQUEUE})
@@ -72,6 +105,16 @@ public class WorkflowRecoveryController {
         return ApiResponse.ok(workflowRecoveryService.retryCurrentVersionPublishTasks(draftId, remark, operator));
     }
 
+    /**
+     * 处理 requeue dead publish task 相关逻辑，并返回对应的执行结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param taskId 相关业务对象的唯一标识
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 统一封装后的接口响应结果
+     */
+
     @PostMapping("/drafts/{draftId}/tasks/{taskId}/manual-requeue")
     @RequireWorkflowPermission({WorkflowPermission.TASK_MANUAL_REQUEUE})
     public ApiResponse<ManualRecoveryResponse> requeueDeadPublishTask(@PathVariable @Min(1) Long draftId,
@@ -81,6 +124,15 @@ public class WorkflowRecoveryController {
         String remark = request == null ? null : request.remark();
         return ApiResponse.ok(workflowRecoveryService.requeueDeadPublishTask(draftId, taskId, remark, operator));
     }
+
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @param statuses 参数 statuses 对应的业务输入值
+     * @param limit 参数 limit 对应的业务输入值
+     * @return 统一封装后的接口响应结果
+     */
 
     @GetMapping("/outbox/events/recovery")
     @RequireWorkflowRole({WorkflowRole.ADMIN})
@@ -93,6 +145,15 @@ public class WorkflowRecoveryController {
         return ApiResponse.ok(workflowRecoveryService.listRecoverableOutboxEvents(draftId, statuses, limit));
     }
 
+    /**
+     * 处理 retry outbox event 相关逻辑，并返回对应的执行结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param outboxEventId 相关业务对象的唯一标识
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 统一封装后的接口响应结果
+     */
+
     @PostMapping("/outbox/events/{outboxEventId}/manual-retry")
     @RequireWorkflowRole({WorkflowRole.ADMIN})
     @RequireWorkflowPermission({WorkflowPermission.OUTBOX_MANUAL_REQUEUE})
@@ -102,6 +163,15 @@ public class WorkflowRecoveryController {
         String remark = request == null ? null : request.remark();
         return ApiResponse.ok(workflowRecoveryService.retryOutboxEvent(outboxEventId, remark, operator));
     }
+
+    /**
+     * 处理 requeue dead outbox event 相关逻辑，并返回对应的执行结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param outboxEventId 相关业务对象的唯一标识
+     * @param request 封装业务输入的请求对象
+     * @param operator 当前操作人身份信息
+     * @return 统一封装后的接口响应结果
+     */
 
     @PostMapping("/outbox/events/{outboxEventId}/manual-requeue")
     @RequireWorkflowRole({WorkflowRole.ADMIN})

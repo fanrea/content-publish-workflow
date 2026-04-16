@@ -11,12 +11,23 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Build payloads for publish side-effect events.
+ * 当前模块中的核心类型，用于承载对应场景下的业务数据或处理能力。
  */
 public final class PublishTaskEventFactory {
 
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     */
+
     private PublishTaskEventFactory() {
     }
+
+    /**
+     * 构建当前场景所需的结果对象或配置内容。
+     *
+     * @param ctx 参数 ctx 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
 
     public static WorkflowEvent buildSearchIndexRefreshRequestedEvent(PublishTaskContext ctx) {
         return buildEvent(
@@ -39,6 +50,13 @@ public final class PublishTaskEventFactory {
         );
     }
 
+    /**
+     * 构建当前场景所需的结果对象或配置内容。
+     *
+     * @param ctx 参数 ctx 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
+
     public static WorkflowEvent buildReadModelSyncRequestedEvent(PublishTaskContext ctx) {
         return buildEvent(
                 WorkflowEventTypes.DOWNSTREAM_READ_MODEL_SYNC_REQUESTED,
@@ -60,6 +78,13 @@ public final class PublishTaskEventFactory {
         );
     }
 
+    /**
+     * 构建当前场景所需的结果对象或配置内容。
+     *
+     * @param ctx 参数 ctx 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
+
     public static WorkflowEvent buildPublishNotificationRequestedEvent(PublishTaskContext ctx) {
         return buildEvent(
                 WorkflowEventTypes.PUBLISH_NOTIFICATION_REQUESTED,
@@ -79,6 +104,15 @@ public final class PublishTaskEventFactory {
         );
     }
 
+    /**
+     * 构建当前场景所需的结果对象或配置内容。
+     *
+     * @param eventType 参数 eventType 对应的业务输入值
+     * @param ctx 参数 ctx 对应的业务输入值
+     * @param payload 参数 payload 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
+
     private static WorkflowEvent buildEvent(String eventType, PublishTaskContext ctx, Object payload) {
         PublishTask task = ctx.task();
         ContentDraft draft = ctx.draft();
@@ -92,6 +126,16 @@ public final class PublishTaskEventFactory {
                 buildHeaders(draft, snapshot, task, ctx.operator())
         );
     }
+
+    /**
+     * 构建当前场景所需的结果对象或配置内容。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draft 草稿对象
+     * @param snapshot 参数 snapshot 对应的业务输入值
+     * @param task 任务对象
+     * @param operator 当前操作人身份信息
+     * @return 方法处理后的结果对象
+     */
 
     private static Map<String, Object> buildHeaders(ContentDraft draft,
                                                     ContentSnapshot snapshot,
@@ -108,6 +152,14 @@ public final class PublishTaskEventFactory {
         return headers;
     }
 
+    /**
+     * 对输入值进行标准化处理，便于后续统一使用。
+     *
+     * @param primary 参数 primary 对应的业务输入值
+     * @param fallback 参数 fallback 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
+
     private static String normalizeOperator(String primary, String fallback) {
         if (primary != null && !primary.isBlank()) {
             return primary;
@@ -117,6 +169,10 @@ public final class PublishTaskEventFactory {
         }
         return "system";
     }
+
+    /**
+     * 不可变数据模型，用于以紧凑形式承载当前场景下需要传递的数据内容。
+     */
 
     public record SearchIndexRefreshRequestedPayload(
             Long taskId,
@@ -134,6 +190,10 @@ public final class PublishTaskEventFactory {
     ) {
     }
 
+    /**
+     * 不可变数据模型，用于以紧凑形式承载当前场景下需要传递的数据内容。
+     */
+
     public record ReadModelSyncRequestedPayload(
             Long taskId,
             Long draftId,
@@ -149,6 +209,10 @@ public final class PublishTaskEventFactory {
             LocalDateTime publishedAt
     ) {
     }
+
+    /**
+     * 不可变数据模型，用于以紧凑形式承载当前场景下需要传递的数据内容。
+     */
 
     public record PublishNotificationRequestedPayload(
             Long taskId,

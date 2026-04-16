@@ -9,8 +9,19 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
+/**
+ * 处理器组件，负责承接特定工作流节点、任务或调度场景的执行逻辑。
+ */
+
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    /**
+     * 处理 handle business 相关逻辑，并返回对应的执行结果。
+     *
+     * @param exception 异常对象
+     * @return 方法处理后的结果对象
+     */
 
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiResponse<Void>> handleBusiness(BusinessException exception) {
@@ -25,6 +36,13 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.fail(exception.getCode(), exception.getMessage()));
     }
 
+    /**
+     * 处理 handle validation 相关逻辑，并返回对应的执行结果。
+     *
+     * @param exception 异常对象
+     * @return 方法处理后的结果对象
+     */
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiResponse<Void>> handleValidation(MethodArgumentNotValidException exception) {
         String message = exception.getBindingResult().getFieldErrors().stream()
@@ -35,11 +53,25 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.fail("VALIDATION_ERROR", message));
     }
 
+    /**
+     * 处理 handle constraint violation 相关逻辑，并返回对应的执行结果。
+     *
+     * @param exception 异常对象
+     * @return 方法处理后的结果对象
+     */
+
     @ExceptionHandler(ConstraintViolationException.class)
     public ResponseEntity<ApiResponse<Void>> handleConstraintViolation(ConstraintViolationException exception) {
         return ResponseEntity.badRequest()
                 .body(ApiResponse.fail("VALIDATION_ERROR", exception.getMessage()));
     }
+
+    /**
+     * 处理 handle unexpected 相关逻辑，并返回对应的执行结果。
+     *
+     * @param exception 异常对象
+     * @return 方法处理后的结果对象
+     */
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleUnexpected(Exception exception) {

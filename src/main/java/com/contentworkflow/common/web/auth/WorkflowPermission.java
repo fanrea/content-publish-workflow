@@ -1,7 +1,7 @@
 package com.contentworkflow.common.web.auth;
 
 /**
- * Fine-grained workflow permissions.
+ * 枚举类型，用于集中定义当前领域中的固定状态、角色或分类值。
  */
 public enum WorkflowPermission {
     DRAFT_READ,

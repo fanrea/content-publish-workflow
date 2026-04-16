@@ -26,11 +26,7 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Publish task worker: claims PENDING/FAILED tasks, executes side effects, retries on failure,
- * and may trigger best-effort compensation while advancing the draft status.
- *
- * <p>The goal is to decouple the publish API from synchronous side effects, so the publish flow
- * becomes retryable, compensatable, and observable.</p>
+ * 后台工作组件，用于异步执行任务、投递消息或处理补偿逻辑。
  */
 @Component
 public class PublishTaskWorker {
@@ -59,6 +55,14 @@ public class PublishTaskWorker {
     @Value("${workflow.scheduler.local.enabled:true}")
     private boolean localScheduleEnabled;
 
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     *
+     * @param store 参数 store 对应的业务输入值
+     * @param handlerList 待处理的数据集合
+     * @param eventPublisher 参数 eventPublisher 对应的业务输入值
+     */
+
     public PublishTaskWorker(WorkflowStore store,
                              List<PublishTaskHandler> handlerList,
                              WorkflowEventPublisher eventPublisher) {
@@ -70,6 +74,10 @@ public class PublishTaskWorker {
         }
         this.handlers = Map.copyOf(map);
     }
+
+    /**
+     * 处理 poll once 相关逻辑，并返回对应的执行结果。
+     */
 
     @Transactional
     public void pollOnce() {
@@ -84,7 +92,7 @@ public class PublishTaskWorker {
     }
 
     /**
-     * Local fallback scheduler for development / standalone mode.
+     * 处理 scheduled poll once 相关逻辑，并返回对应的执行结果。
      */
     @Scheduled(fixedDelayString = "${workflow.task.worker.pollDelayMs:1000}")
     public void scheduledPollOnce() {
@@ -93,6 +101,13 @@ public class PublishTaskWorker {
         }
         pollOnce();
     }
+
+    /**
+     * 处理 execute one 相关逻辑，并返回对应的执行结果。
+     *
+     * @param task 任务对象
+     * @param now 参数 now 对应的业务输入值
+     */
 
     private void executeOne(PublishTask task, LocalDateTime now) {
         // Double-check status to avoid duplicate execution.
@@ -135,6 +150,13 @@ public class PublishTaskWorker {
         }
     }
 
+    /**
+     * 处理 mark success 相关逻辑，并返回对应的执行结果。
+     *
+     * @param task 任务对象
+     * @param now 参数 now 对应的业务输入值
+     */
+
     private void markSuccess(PublishTask task, LocalDateTime now) {
         String operatorName = workerId;
         task.setStatus(PublishTaskStatus.SUCCESS);
@@ -153,6 +175,14 @@ public class PublishTaskWorker {
                 .createdAt(now)
                 .build());
     }
+
+    /**
+     * 处理 mark failed or dead 相关逻辑，并返回对应的执行结果。
+     *
+     * @param task 任务对象
+     * @param now 参数 now 对应的业务输入值
+     * @param e 参数 e 对应的业务输入值
+     */
 
     private void markFailedOrDead(PublishTask task, LocalDateTime now, Exception e) {
         int retry = (task.getRetryTimes() == null ? 0 : task.getRetryTimes()) + 1;
@@ -195,6 +225,14 @@ public class PublishTaskWorker {
                 .build());
     }
 
+    /**
+     * 处理 mark dead 相关逻辑，并返回对应的执行结果。
+     *
+     * @param task 任务对象
+     * @param now 参数 now 对应的业务输入值
+     * @param reason 参数 reason 对应的业务输入值
+     */
+
     private void markDead(PublishTask task, LocalDateTime now, String reason) {
         task.setStatus(PublishTaskStatus.DEAD);
         task.setErrorMessage(reason);
@@ -204,6 +242,15 @@ public class PublishTaskWorker {
         task.setUpdatedAt(now);
         store.updatePublishTask(task);
     }
+
+    /**
+     * 处理 try finalize draft 相关逻辑，并返回对应的执行结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param publishedVersion 参数 publishedVersion 对应的业务输入值
+     * @param now 参数 now 对应的业务输入值
+     * @param operator 当前操作人身份信息
+     */
 
     private void tryFinalizeDraft(Long draftId, Integer publishedVersion, LocalDateTime now, String operator) {
         ContentDraft draft = store.findDraftById(draftId).orElse(null);
@@ -254,6 +301,16 @@ public class PublishTaskWorker {
                 Map.of("operator", operator == null ? "system" : operator)
         ));
     }
+
+    /**
+     * 处理 mark draft failed and compensate 相关逻辑，并返回对应的执行结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
+     *
+     * @param draftId 草稿唯一标识
+     * @param publishedVersion 参数 publishedVersion 对应的业务输入值
+     * @param now 参数 now 对应的业务输入值
+     * @param operator 当前操作人身份信息
+     * @param reason 参数 reason 对应的业务输入值
+     */
 
     private void markDraftFailedAndCompensate(Long draftId,
                                               Integer publishedVersion,
@@ -323,6 +380,13 @@ public class PublishTaskWorker {
             }
         }
     }
+
+    /**
+     * 处理 short error 相关逻辑，并返回对应的执行结果。
+     *
+     * @param e 参数 e 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
 
     private static String shortError(Exception e) {
         String msg = e.getMessage();

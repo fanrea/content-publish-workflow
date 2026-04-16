@@ -1,9 +1,13 @@
 package com.contentworkflow.common.cache;
 
 /**
- * Centralized Spring Cache names.
+ * 当前模块中的核心类型，用于承载对应场景下的业务数据或处理能力。
  */
 public final class CacheNames {
+
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     */
 
     private CacheNames() {
     }

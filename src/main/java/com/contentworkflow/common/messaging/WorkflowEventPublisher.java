@@ -1,14 +1,15 @@
 package com.contentworkflow.common.messaging;
 
 /**
- * 领域事件发布器（扩展点）。
- *
- * <p>本项目采用 outbox 模式做“可靠投递”：业务侧只负责把事件写入 outbox（同事务落库），
- * 再由 outbox relay 异步扫描 outbox 并投递到 RabbitMQ，从而避免 DB 与 MQ 的不一致。</p>
- *
- * <p>注意：publisher 只负责“提交事件”，不保证实时送达；送达由 outbox relay 闭环负责。</p>
+ * 发布器组件，用于封装事件构建、消息投递或 outbox 发布逻辑。
  */
 public interface WorkflowEventPublisher {
+
+    /**
+     * 触发发布流程，并返回发布动作对应的处理结果。
+     *
+     * @param event 事件对象
+     */
 
     void publish(WorkflowEvent event);
 }

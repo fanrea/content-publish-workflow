@@ -3,7 +3,7 @@ package com.contentworkflow.workflow.interfaces.vo;
 import java.util.List;
 
 /**
- * 草稿统计结果（用于列表页顶部统计区/状态过滤器）。
+ * 接口层响应模型，用于向调用方返回结构化的业务结果。
  */
 public record DraftStatsResponse(
         long total,

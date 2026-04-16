@@ -7,7 +7,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
- * Outbox publisher: persist events into the outbox table, then let the relay deliver them to MQ.
+ * 发布器组件，用于封装事件构建、消息投递或 outbox 发布逻辑。
  */
 public class OutboxWorkflowEventPublisher implements WorkflowEventPublisher {
 
@@ -15,6 +15,15 @@ public class OutboxWorkflowEventPublisher implements WorkflowEventPublisher {
     private final RoutingKeyResolver routingKeyResolver;
     private final ObjectMapper objectMapper;
     private final OutboxEnqueuer enqueuer;
+
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     *
+     * @param props 配置属性对象
+     * @param routingKeyResolver 参数 routingKeyResolver 对应的业务输入值
+     * @param objectMapper 参数 objectMapper 对应的业务输入值
+     * @param enqueuer 参数 enqueuer 对应的业务输入值
+     */
 
     public OutboxWorkflowEventPublisher(WorkflowMessagingProperties props,
                                         RoutingKeyResolver routingKeyResolver,
@@ -25,6 +34,12 @@ public class OutboxWorkflowEventPublisher implements WorkflowEventPublisher {
         this.objectMapper = objectMapper;
         this.enqueuer = enqueuer;
     }
+
+    /**
+     * 触发发布流程，并返回发布动作对应的处理结果。
+     *
+     * @param event 事件对象
+     */
 
     @Override
     public void publish(WorkflowEvent event) {
@@ -50,6 +65,13 @@ public class OutboxWorkflowEventPublisher implements WorkflowEventPublisher {
 
         enqueuer.enqueue(row);
     }
+
+    /**
+     * 处理 to json quietly 相关逻辑，并返回对应的执行结果。
+     *
+     * @param obj 参数 obj 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
 
     private String toJsonQuietly(Object obj) {
         if (obj == null) {

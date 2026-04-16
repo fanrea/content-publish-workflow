@@ -1,9 +1,7 @@
 package com.contentworkflow.workflow.domain.enums;
 
 /**
- * 发布任务状态。
- *
- * <p>任务状态机只描述“任务编排”层面的执行进度，不代表业务内容已经对外可见。</p>
+ * 枚举类型，用于集中定义当前领域中的固定状态、角色或分类值。
  */
 public enum PublishTaskStatus {
     /**

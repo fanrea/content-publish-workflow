@@ -11,26 +11,28 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Parse operator identity and roles from custom headers.
- *
- * <p>设计目标：</p>
- * <ul>
- *     <li>接口层明确角色约束，拦截器负责鉴权</li>
- *     <li>操作人通过自定义 Header 传入，便于审计/回放</li>
- *     <li>兼容单角色 {@code X-Workflow-Role} 与多角色 {@code X-Workflow-Roles}</li>
- * </ul>
+ * 解析器组件，用于把输入信息转换为业务流程可直接使用的结构化结果。
  */
 @Component
 public class WorkflowOperatorResolver {
 
     private final WorkflowPermissionPolicy permissionPolicy;
 
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     *
+     * @param permissionPolicy 参数 permissionPolicy 对应的业务输入值
+     */
+
     public WorkflowOperatorResolver(WorkflowPermissionPolicy permissionPolicy) {
         this.permissionPolicy = permissionPolicy;
     }
 
     /**
-     * Resolve and validate operator + roles from headers. Throws {@code BusinessException} when invalid.
+     * 解析输入信息并生成当前流程所需的结构化结果。
+     *
+     * @param request 封装业务输入的请求对象
+     * @return 方法处理后的结果对象
      */
     public ResolvedWorkflowAuth resolveRequired(HttpServletRequest request) {
         String operatorId = requiredHeader(request, WorkflowAuthConstants.OPERATOR_ID_HEADER);
@@ -45,9 +47,10 @@ public class WorkflowOperatorResolver {
     }
 
     /**
-     * Pick the effective role from a set. Higher privilege wins.
+     * 处理 pick effective role 相关逻辑，并返回对应的执行结果。
      *
-     * <p>这里不做权限授予，仅用于选择一个“代表角色”写入审计/传递给 service。</p>
+     * @param roles 角色集合
+     * @return 方法处理后的结果对象
      */
     public WorkflowRole pickEffectiveRole(Set<WorkflowRole> roles) {
         if (roles == null || roles.isEmpty()) {
@@ -64,6 +67,13 @@ public class WorkflowOperatorResolver {
         }
         return WorkflowRole.EDITOR;
     }
+
+    /**
+     * 处理 parse roles required 相关逻辑，并返回对应的执行结果。
+     *
+     * @param request 封装业务输入的请求对象
+     * @return 方法处理后的结果对象
+     */
 
     private EnumSet<WorkflowRole> parseRolesRequired(HttpServletRequest request) {
         String rolesHeader = request.getHeader(WorkflowAuthConstants.ROLES_HEADER);
@@ -83,6 +93,13 @@ public class WorkflowOperatorResolver {
         return roles;
     }
 
+    /**
+     * 处理 parse roles value 相关逻辑，并返回对应的执行结果。
+     *
+     * @param value 待处理的原始值
+     * @return 方法处理后的结果对象
+     */
+
     private EnumSet<WorkflowRole> parseRolesValue(String value) {
         // Split by common separators: comma / semicolon / whitespace.
         String[] tokens = value.split("[,;\\s]+");
@@ -97,6 +114,13 @@ public class WorkflowOperatorResolver {
         return roles;
     }
 
+    /**
+     * 处理 parse role token 相关逻辑，并返回对应的执行结果。
+     *
+     * @param token 参数 token 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
+
     private WorkflowRole parseRoleToken(String token) {
         try {
             return WorkflowRole.valueOf(token.trim().toUpperCase(Locale.ROOT));
@@ -105,6 +129,14 @@ public class WorkflowOperatorResolver {
         }
     }
 
+    /**
+     * 处理 required header 相关逻辑，并返回对应的执行结果。
+     *
+     * @param request 封装业务输入的请求对象
+     * @param headerName 参数 headerName 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
+
     private String requiredHeader(HttpServletRequest request, String headerName) {
         String value = request.getHeader(headerName);
         if (value == null || value.isBlank()) {
@@ -112,6 +144,10 @@ public class WorkflowOperatorResolver {
         }
         return value.trim();
     }
+
+    /**
+     * 不可变数据模型，用于以紧凑形式承载当前场景下需要传递的数据内容。
+     */
 
     public record ResolvedWorkflowAuth(
             WorkflowOperatorIdentity identity,

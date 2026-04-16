@@ -1,9 +1,11 @@
-﻿-- Embedded DB init schema (H2 in MySQL compatibility mode).
+-- Embedded DB init schema (H2 in MySQL compatibility mode).
 --
--- 说明：
--- 1) 该文件用于 Spring Boot 在 embedded DB 场景下初始化表结构。
--- 2) 如果使用 MySQL，请优先参考仓库根目录的 sql/schema.sql。
--- 3) 这里尽量保持 H2 可执行的 SQL 语法，不引入 MySQL 专属写法，例如 ON UPDATE CURRENT_TIMESTAMP。
+-- Notes:
+-- 1) Spring Boot uses this file only for embedded database initialization.
+-- 2) For MySQL, use the repository root file: sql/schema.sql.
+-- 3) Keep this script H2-friendly and avoid MySQL-only clauses such as
+--    ON UPDATE CURRENT_TIMESTAMP.
+
 DROP TABLE IF EXISTS content_publish_log;
 DROP TABLE IF EXISTS content_publish_command;
 DROP TABLE IF EXISTS content_publish_task;
@@ -48,7 +50,7 @@ CREATE TABLE content_publish_snapshot (
     summary VARCHAR(500) NOT NULL,
     body TEXT NOT NULL,
     operator_name VARCHAR(64) NOT NULL,
-    rollback_flag TINYINT(1) NOT NULL DEFAULT 0,
+    rollback_flag BOOLEAN NOT NULL DEFAULT FALSE,
     published_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uk_snapshot_draft_version UNIQUE (draft_id, published_version),
     CONSTRAINT fk_publish_snapshot_draft FOREIGN KEY (draft_id) REFERENCES content_draft(id)
@@ -112,7 +114,6 @@ CREATE TABLE content_publish_command (
     CONSTRAINT fk_publish_command_draft FOREIGN KEY (draft_id) REFERENCES content_draft(id)
 );
 
--- Outbox event table (H2).
 CREATE TABLE workflow_outbox_event (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     event_id VARCHAR(64) NOT NULL,
@@ -136,7 +137,6 @@ CREATE TABLE workflow_outbox_event (
     CONSTRAINT uk_outbox_event_id UNIQUE (event_id)
 );
 
--- Indexes for list/filter/sort (frontend list pages)
 CREATE INDEX idx_content_draft_status ON content_draft (workflow_status);
 CREATE INDEX idx_content_draft_updated_at ON content_draft (updated_at);
 CREATE INDEX idx_content_draft_created_at ON content_draft (created_at);

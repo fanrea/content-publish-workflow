@@ -8,6 +8,10 @@ import lombok.Setter;
 
 import java.time.LocalDateTime;
 
+/**
+ * 持久化实体，用于映射数据库记录并承载 ORM 层的字段信息。
+ */
+
 @Getter
 @Setter
 @NoArgsConstructor
@@ -60,6 +64,10 @@ public class ContentDraftJpaEntity {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
+    /**
+     * 处理 pre persist 相关逻辑，并返回对应的执行结果。
+     */
+
     @PrePersist
     public void prePersist() {
         LocalDateTime now = LocalDateTime.now();
@@ -77,6 +85,10 @@ public class ContentDraftJpaEntity {
             workflowStatus = WorkflowStatus.DRAFT;
         }
     }
+
+    /**
+     * 处理 pre update 相关逻辑，并返回对应的执行结果。
+     */
 
     @PreUpdate
     public void preUpdate() {

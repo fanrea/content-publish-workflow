@@ -1,4 +1,4 @@
-﻿package com.contentworkflow.workflow.application.store;
+package com.contentworkflow.workflow.application.store;
 
 import com.contentworkflow.common.api.PageResponse;
 import com.contentworkflow.workflow.domain.entity.ContentDraft;
@@ -44,10 +44,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * JPA-backed workflow store.
- *
- * <p>This class keeps entity/domain mapping local so the application service remains
- * persistence-agnostic.</p>
+ * 存储抽象，用于统一封装业务对象的持久化读写与查询访问。
  */
 @Primary
 @Component
@@ -60,6 +57,18 @@ public class JpaWorkflowStore implements WorkflowStore {
     private final PublishLogJpaRepository logRepo;
     private final PublishCommandJpaRepository commandRepo;
     private final EntityManager entityManager;
+
+    /**
+     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
+     *
+     * @param draftRepo 参数 draftRepo 对应的业务输入值
+     * @param reviewRepo 参数 reviewRepo 对应的业务输入值
+     * @param snapshotRepo 参数 snapshotRepo 对应的业务输入值
+     * @param taskRepo 参数 taskRepo 对应的业务输入值
+     * @param logRepo 参数 logRepo 对应的业务输入值
+     * @param commandRepo 参数 commandRepo 对应的业务输入值
+     * @param entityManager 参数 entityManager 对应的业务输入值
+     */
 
     public JpaWorkflowStore(ContentDraftJpaRepository draftRepo,
                             ReviewRecordJpaRepository reviewRepo,
@@ -77,6 +86,12 @@ public class JpaWorkflowStore implements WorkflowStore {
         this.entityManager = entityManager;
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @return 符合条件的结果集合
+     */
+
     @Override
     @Transactional(readOnly = true)
     public List<ContentDraft> listDrafts() {
@@ -84,6 +99,13 @@ public class JpaWorkflowStore implements WorkflowStore {
                 .map(this::toDomain)
                 .toList();
     }
+
+    /**
+     * 按分页条件查询数据，并返回包含分页元信息的结果。
+     *
+     * @param request 封装业务输入的请求对象
+     * @return 包含分页数据和分页元信息的结果对象
+     */
 
     @Override
     @Transactional(readOnly = true)
@@ -101,6 +123,13 @@ public class JpaWorkflowStore implements WorkflowStore {
                 .toList();
         return new PageResponse<>(items, page.getTotalElements(), pageNo, pageSize, page.getTotalPages());
     }
+
+    /**
+     * 统计满足条件的数据数量，用于计数或监控场景。
+     *
+     * @param request 封装业务输入的请求对象
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     @Transactional(readOnly = true)
@@ -132,6 +161,13 @@ public class JpaWorkflowStore implements WorkflowStore {
         return result;
     }
 
+    /**
+     * 处理 insert draft 相关逻辑，并返回对应的执行结果。
+     *
+     * @param draft 草稿对象
+     * @return 方法处理后的结果对象
+     */
+
     @Override
     @Transactional
     public ContentDraft insertDraft(ContentDraft draft) {
@@ -154,11 +190,25 @@ public class JpaWorkflowStore implements WorkflowStore {
         return toDomain(saved);
     }
 
+    /**
+     * 按给定条件查找匹配的业务对象。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 匹配到结果时返回对应对象，否则返回空的 Optional 容器
+     */
+
     @Override
     @Transactional(readOnly = true)
     public Optional<ContentDraft> findDraftById(Long draftId) {
         return draftRepo.findById(draftId).map(this::toDomain);
     }
+
+    /**
+     * 根据输入参数更新已有业务对象，并返回更新后的状态。
+     *
+     * @param draft 草稿对象
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     @Transactional
@@ -178,6 +228,13 @@ public class JpaWorkflowStore implements WorkflowStore {
         return toDomain(saved);
     }
 
+    /**
+     * 处理 insert review record 相关逻辑，并返回对应的执行结果。
+     *
+     * @param record 记录对象
+     * @return 方法处理后的结果对象
+     */
+
     @Override
     @Transactional
     public ReviewRecord insertReviewRecord(ReviewRecord record) {
@@ -192,6 +249,13 @@ public class JpaWorkflowStore implements WorkflowStore {
         return toDomain(saved);
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 符合条件的结果集合
+     */
+
     @Override
     @Transactional(readOnly = true)
     public List<ReviewRecord> listReviewRecords(Long draftId) {
@@ -199,6 +263,13 @@ public class JpaWorkflowStore implements WorkflowStore {
                 .map(this::toDomain)
                 .toList();
     }
+
+    /**
+     * 处理 insert snapshot 相关逻辑，并返回对应的执行结果。
+     *
+     * @param snapshot 参数 snapshot 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     @Transactional
@@ -217,6 +288,13 @@ public class JpaWorkflowStore implements WorkflowStore {
         return toDomain(saved);
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 符合条件的结果集合
+     */
+
     @Override
     @Transactional(readOnly = true)
     public List<ContentSnapshot> listSnapshots(Long draftId) {
@@ -224,6 +302,13 @@ public class JpaWorkflowStore implements WorkflowStore {
                 .map(this::toDomain)
                 .toList();
     }
+
+    /**
+     * 处理 insert publish tasks 相关逻辑，并返回对应的执行结果。
+     *
+     * @param tasks 参数 tasks 对应的业务输入值
+     * @return 符合条件的结果集合
+     */
 
     @Override
     @Transactional
@@ -250,6 +335,13 @@ public class JpaWorkflowStore implements WorkflowStore {
         return saved.stream().map(this::toDomain).toList();
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 符合条件的结果集合
+     */
+
     @Override
     @Transactional(readOnly = true)
     public List<PublishTask> listPublishTasks(Long draftId) {
@@ -257,6 +349,13 @@ public class JpaWorkflowStore implements WorkflowStore {
                 .map(this::toDomain)
                 .toList();
     }
+
+    /**
+     * 根据输入参数更新已有业务对象，并返回更新后的状态。
+     *
+     * @param task 任务对象
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     @Transactional
@@ -273,6 +372,13 @@ public class JpaWorkflowStore implements WorkflowStore {
         return toDomain(taskRepo.save(entity));
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param status 状态值
+     * @return 符合条件的结果集合
+     */
+
     @Override
     @Transactional(readOnly = true)
     public List<PublishTask> listPublishTasksByStatus(com.contentworkflow.workflow.domain.enums.PublishTaskStatus status) {
@@ -280,6 +386,16 @@ public class JpaWorkflowStore implements WorkflowStore {
                 .map(this::toDomain)
                 .toList();
     }
+
+    /**
+     * 处理 claim runnable publish tasks 相关逻辑，并返回对应的执行结果。
+     *
+     * @param limit 参数 limit 对应的业务输入值
+     * @param workerId 相关业务对象的唯一标识
+     * @param now 参数 now 对应的业务输入值
+     * @param lockSeconds 参数 lockSeconds 对应的业务输入值
+     * @return 符合条件的结果集合
+     */
 
     @Override
     @Transactional
@@ -302,6 +418,15 @@ public class JpaWorkflowStore implements WorkflowStore {
         return taskRepo.saveAll(runnable).stream().map(this::toDomain).toList();
     }
 
+    /**
+     * 按给定条件查找匹配的业务对象。
+     *
+     * @param draftId 草稿唯一标识
+     * @param commandType 参数 commandType 对应的业务输入值
+     * @param idempotencyKey 参数 idempotencyKey 对应的业务输入值
+     * @return 匹配到结果时返回对应对象，否则返回空的 Optional 容器
+     */
+
     @Override
     @Transactional(readOnly = true)
     public Optional<PublishCommandEntry> findPublishCommand(Long draftId, String commandType, String idempotencyKey) {
@@ -311,6 +436,13 @@ public class JpaWorkflowStore implements WorkflowStore {
         return commandRepo.findByDraftIdAndCommandTypeAndIdempotencyKey(draftId, commandType, idempotencyKey)
                 .map(this::toCommandEntry);
     }
+
+    /**
+     * 处理 try create publish command 相关逻辑，并返回对应的执行结果。
+     *
+     * @param entry 参数 entry 对应的业务输入值
+     * @return 返回 true 表示条件成立或处理成功，返回 false 表示条件不成立或未命中
+     */
 
     @Override
     @Transactional
@@ -340,6 +472,13 @@ public class JpaWorkflowStore implements WorkflowStore {
         }
     }
 
+    /**
+     * 根据输入参数更新已有业务对象，并返回更新后的状态。
+     *
+     * @param entry 参数 entry 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
+
     @Override
     @Transactional
     public PublishCommandEntry updatePublishCommand(PublishCommandEntry entry) {
@@ -358,6 +497,13 @@ public class JpaWorkflowStore implements WorkflowStore {
         return toCommandEntry(commandRepo.save(entity));
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 符合条件的结果集合
+     */
+
     @Override
     @Transactional(readOnly = true)
     public List<PublishCommandEntry> listPublishCommands(Long draftId) {
@@ -365,6 +511,13 @@ public class JpaWorkflowStore implements WorkflowStore {
                 .map(this::toCommandEntry)
                 .toList();
     }
+
+    /**
+     * 处理 insert publish log 相关逻辑，并返回对应的执行结果。
+     *
+     * @param entry 参数 entry 对应的业务输入值
+     * @return 方法处理后的结果对象
+     */
 
     @Override
     @Transactional
@@ -392,6 +545,13 @@ public class JpaWorkflowStore implements WorkflowStore {
         return toPublishLogEntry(saved);
     }
 
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param draftId 草稿唯一标识
+     * @return 符合条件的结果集合
+     */
+
     @Override
     @Transactional(readOnly = true)
     public List<PublishLogEntry> listPublishLogs(Long draftId) {
@@ -399,6 +559,13 @@ public class JpaWorkflowStore implements WorkflowStore {
                 .map(this::toPublishLogEntry)
                 .toList();
     }
+
+    /**
+     * 查询并返回符合条件的数据列表，供上层流程继续处理或展示。
+     *
+     * @param traceId 链路追踪标识
+     * @return 符合条件的结果集合
+     */
 
     @Override
     @Transactional(readOnly = true)
@@ -410,6 +577,13 @@ public class JpaWorkflowStore implements WorkflowStore {
                 .map(this::toPublishLogEntry)
                 .toList();
     }
+
+    /**
+     * 处理 to domain 相关逻辑，并返回对应的执行结果。
+     *
+     * @param entity 待处理实体对象
+     * @return 方法处理后的结果对象
+     */
 
     private ContentDraft toDomain(ContentDraftJpaEntity entity) {
         return ContentDraft.builder()
@@ -428,6 +602,13 @@ public class JpaWorkflowStore implements WorkflowStore {
                 .build();
     }
 
+    /**
+     * 处理 to domain 相关逻辑，并返回对应的执行结果。
+     *
+     * @param entity 待处理实体对象
+     * @return 方法处理后的结果对象
+     */
+
     private ReviewRecord toDomain(ReviewRecordJpaEntity entity) {
         return ReviewRecord.builder()
                 .id(entity.getId())
@@ -439,6 +620,13 @@ public class JpaWorkflowStore implements WorkflowStore {
                 .reviewedAt(entity.getReviewedAt())
                 .build();
     }
+
+    /**
+     * 处理 to domain 相关逻辑，并返回对应的执行结果。
+     *
+     * @param entity 待处理实体对象
+     * @return 方法处理后的结果对象
+     */
 
     private ContentSnapshot toDomain(ContentSnapshotJpaEntity entity) {
         return ContentSnapshot.builder()
@@ -454,6 +642,13 @@ public class JpaWorkflowStore implements WorkflowStore {
                 .publishedAt(entity.getPublishedAt())
                 .build();
     }
+
+    /**
+     * 处理 to command entry 相关逻辑，并返回对应的执行结果。
+     *
+     * @param entity 待处理实体对象
+     * @return 方法处理后的结果对象
+     */
 
     private PublishCommandEntry toCommandEntry(PublishCommandJpaEntity entity) {
         return PublishCommandEntry.builder()
@@ -472,9 +667,23 @@ public class JpaWorkflowStore implements WorkflowStore {
                 .build();
     }
 
+    /**
+     * 处理 to domain 相关逻辑，并返回对应的执行结果。
+     *
+     * @param entity 待处理实体对象
+     * @return 方法处理后的结果对象
+     */
+
     private PublishTask toDomain(PublishTaskJpaEntity entity) {
         return PublishTaskMapper.toDomain(entity);
     }
+
+    /**
+     * 处理 to publish log entry 相关逻辑，并返回对应的执行结果。
+     *
+     * @param entity 待处理实体对象
+     * @return 方法处理后的结果对象
+     */
 
     private PublishLogEntry toPublishLogEntry(PublishLogJpaEntity entity) {
         return PublishLogEntry.builder()
@@ -501,9 +710,10 @@ public class JpaWorkflowStore implements WorkflowStore {
     }
 
     /**
-     * Convert DraftQueryRequest into a JPA Specification.
+     * 构建当前场景所需的结果对象或配置内容。
      *
-     * <p>This method only describes filter conditions. Pagination and sorting are handled separately.</p>
+     * @param request 封装业务输入的请求对象
+     * @return 方法处理后的结果对象
      */
     private Specification<ContentDraftJpaEntity> buildDraftSpec(DraftQueryRequest request) {
         return (root, query, cb) -> {
@@ -548,9 +758,10 @@ public class JpaWorkflowStore implements WorkflowStore {
     }
 
     /**
-     * Map API sort fields to JPA entity properties.
+     * 处理 to sort 相关逻辑，并返回对应的执行结果。
      *
-     * <p>Always append id as a stable tiebreaker to avoid pagination jitter.</p>
+     * @param request 封装业务输入的请求对象
+     * @return 方法处理后的结果对象
      */
     private Sort toSort(DraftQueryRequest request) {
         Sort.Direction direction = request.sortDirection() == DraftQueryRequest.SortDirection.DESC
