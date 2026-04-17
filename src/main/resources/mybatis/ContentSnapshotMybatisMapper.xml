@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.contentworkflow.workflow.infrastructure.persistence.mybatis.ContentSnapshotMybatisMapper">
+
+    <sql id="snapshotColumns">
+        id,
+        draft_id,
+        published_version,
+        source_draft_version,
+        title,
+        summary,
+        body,
+        operator_name,
+        rollback_flag,
+        published_at
+    </sql>
+
+    <insert id="insert" parameterType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotJpaEntity"
+            useGeneratedKeys="true" keyProperty="id">
+        insert into content_publish_snapshot (
+            draft_id,
+            published_version,
+            source_draft_version,
+            title,
+            summary,
+            body,
+            operator_name,
+            rollback_flag,
+            published_at
+        ) values (
+            #{draftId},
+            #{publishedVersion},
+            #{sourceDraftVersion},
+            #{title},
+            #{summary},
+            #{body},
+            #{operatorName},
+            #{rollback},
+            #{publishedAt}
+        )
+    </insert>
+
+    <select id="selectByDraftIdAndPublishedVersion" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotJpaEntity">
+        select <include refid="snapshotColumns" />
+        from content_publish_snapshot
+        where draft_id = #{draftId}
+          and published_version = #{publishedVersion}
+    </select>
+
+    <select id="selectLatestByDraftId" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotJpaEntity">
+        select <include refid="snapshotColumns" />
+        from content_publish_snapshot
+        where draft_id = #{draftId}
+        order by published_version desc
+        limit 1
+    </select>
+
+    <select id="selectByDraftIdOrderByPublishedVersionDesc" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotJpaEntity">
+        select <include refid="snapshotColumns" />
+        from content_publish_snapshot
+        where draft_id = #{draftId}
+        order by published_version desc, id desc
+    </select>
+</mapper>

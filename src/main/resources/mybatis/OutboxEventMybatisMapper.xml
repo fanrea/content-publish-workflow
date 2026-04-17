@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.contentworkflow.common.messaging.outbox.mybatis.OutboxEventMybatisMapper">
+
+    <sql id="outboxColumns">
+        id,
+        event_id,
+        event_type,
+        aggregate_type,
+        aggregate_id,
+        aggregate_version,
+        exchange_name,
+        routing_key,
+        payload_json,
+        headers_json,
+        status,
+        attempt,
+        next_retry_at,
+        locked_by,
+        locked_at,
+        error_message,
+        created_at,
+        sent_at,
+        updated_at
+    </sql>
+
+    <select id="selectById" resultType="com.contentworkflow.common.messaging.outbox.OutboxEventEntity">
+        select <include refid="outboxColumns" />
+        from workflow_outbox_event
+        where id = #{id}
+    </select>
+
+    <insert id="insert" parameterType="com.contentworkflow.common.messaging.outbox.OutboxEventEntity"
+            useGeneratedKeys="true" keyProperty="id">
+        insert into workflow_outbox_event (
+            event_id,
+            event_type,
+            aggregate_type,
+            aggregate_id,
+            aggregate_version,
+            exchange_name,
+            routing_key,
+            payload_json,
+            headers_json,
+            status,
+            attempt,
+            next_retry_at,
+            locked_by,
+            locked_at,
+            error_message,
+            created_at,
+            sent_at,
+            updated_at
+        ) values (
+            #{eventId},
+            #{eventType},
+            #{aggregateType},
+            #{aggregateId},
+            #{aggregateVersion},
+            #{exchangeName},
+            #{routingKey},
+            #{payloadJson},
+            #{headersJson},
+            #{status},
+            #{attempt},
+            #{nextRetryAt},
+            #{lockedBy},
+            #{lockedAt},
+            #{errorMessage},
+            #{createdAt},
+            #{sentAt},
+            #{updatedAt}
+        )
+    </insert>
+
+    <update id="update" parameterType="com.contentworkflow.common.messaging.outbox.OutboxEventEntity">
+        update workflow_outbox_event
+        set event_id = #{eventId},
+            event_type = #{eventType},
+            aggregate_type = #{aggregateType},
+            aggregate_id = #{aggregateId},
+            aggregate_version = #{aggregateVersion},
+            exchange_name = #{exchangeName},
+            routing_key = #{routingKey},
+            payload_json = #{payloadJson},
+            headers_json = #{headersJson},
+            status = #{status},
+            attempt = #{attempt},
+            next_retry_at = #{nextRetryAt},
+            locked_by = #{lockedBy},
+            locked_at = #{lockedAt},
+            error_message = #{errorMessage},
+            sent_at = #{sentAt},
+            updated_at = #{updatedAt}
+        where id = #{id}
+    </update>
+
+    <select id="selectClaimCandidates" resultType="com.contentworkflow.common.messaging.outbox.OutboxEventEntity">
+        select <include refid="outboxColumns" />
+        from workflow_outbox_event
+        where status in
+        <foreach collection="statuses" item="status" open="(" close=")" separator=",">
+            #{status}
+        </foreach>
+          and (next_retry_at is null or next_retry_at <![CDATA[<=]]> #{now})
+          and (locked_at is null or locked_at <![CDATA[<]]> #{lockExpiredBefore})
+        order by created_at asc, id asc
+        limit #{limit}
+        for update
+    </select>
+
+    <select id="selectByStatusOrderByCreatedAtAsc" resultType="com.contentworkflow.common.messaging.outbox.OutboxEventEntity">
+        select <include refid="outboxColumns" />
+        from workflow_outbox_event
+        where status = #{status}
+        order by created_at asc, id asc
+        limit #{limit} offset #{offset}
+    </select>
+
+    <select id="selectByStatusIn" resultType="com.contentworkflow.common.messaging.outbox.OutboxEventEntity">
+        select <include refid="outboxColumns" />
+        from workflow_outbox_event
+        where status in
+        <foreach collection="statuses" item="status" open="(" close=")" separator=",">
+            #{status}
+        </foreach>
+        order by ${orderByClause}
+        limit #{limit} offset #{offset}
+    </select>
+
+    <select id="selectByAggregateAndStatusIn" resultType="com.contentworkflow.common.messaging.outbox.OutboxEventEntity">
+        select <include refid="outboxColumns" />
+        from workflow_outbox_event
+        where aggregate_type = #{aggregateType}
+          and aggregate_id = #{aggregateId}
+          and status in
+          <foreach collection="statuses" item="status" open="(" close=")" separator=",">
+              #{status}
+          </foreach>
+        order by ${orderByClause}
+        limit #{limit} offset #{offset}
+    </select>
+</mapper>

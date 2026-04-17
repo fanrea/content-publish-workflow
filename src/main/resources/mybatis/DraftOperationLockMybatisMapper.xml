@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.contentworkflow.workflow.infrastructure.persistence.mybatis.DraftOperationLockMybatisMapper">
+
+    <select id="selectByDraftId" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.DraftOperationLockJpaEntity">
+        select draft_id, operation_type, target_published_version, locked_by, locked_at, expires_at
+        from draft_operation_lock
+        where draft_id = #{draftId}
+    </select>
+
+    <insert id="insertLock">
+        insert into draft_operation_lock (
+            draft_id,
+            operation_type,
+            target_published_version,
+            locked_by,
+            locked_at,
+            expires_at
+        ) values (
+            #{draftId},
+            #{operationType},
+            #{targetPublishedVersion},
+            #{lockedBy},
+            #{lockedAt},
+            #{expiresAt}
+        )
+    </insert>
+
+    <update id="replaceExpiredLock">
+        update draft_operation_lock
+        set operation_type = #{operationType},
+            target_published_version = #{targetPublishedVersion},
+            locked_by = #{lockedBy},
+            locked_at = #{lockedAt},
+            expires_at = #{expiresAt}
+        where draft_id = #{draftId}
+          and expires_at <![CDATA[<=]]> #{now}
+    </update>
+
+    <update id="renewLock">
+        update draft_operation_lock
+        set locked_by = #{lockedBy},
+            locked_at = #{lockedAt},
+            expires_at = #{expiresAt}
+        where draft_id = #{draftId}
+          and (
+              (#{targetPublishedVersion} is null and target_published_version is null)
+              or target_published_version = #{targetPublishedVersion}
+          )
+    </update>
+
+    <delete id="deleteMatchingLock">
+        delete from draft_operation_lock
+        where draft_id = #{draftId}
+          and (
+              (#{targetPublishedVersion} is null and target_published_version is null)
+              or target_published_version = #{targetPublishedVersion}
+          )
+    </delete>
+</mapper>
