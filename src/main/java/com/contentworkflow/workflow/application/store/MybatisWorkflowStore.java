@@ -9,13 +9,13 @@ import com.contentworkflow.workflow.domain.entity.PublishTask;
 import com.contentworkflow.workflow.domain.entity.ReviewRecord;
 import com.contentworkflow.workflow.domain.enums.PublishTaskStatus;
 import com.contentworkflow.workflow.domain.enums.WorkflowStatus;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftJpaEntity;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotJpaEntity;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.DraftOperationLockJpaEntity;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishCommandJpaEntity;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishLogJpaEntity;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishTaskJpaEntity;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.ReviewRecordJpaEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.DraftOperationLockEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishCommandEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishLogEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishTaskEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.ReviewRecordEntity;
 import com.contentworkflow.workflow.infrastructure.persistence.mybatis.ContentDraftMybatisMapper;
 import com.contentworkflow.workflow.infrastructure.persistence.mybatis.ContentSnapshotMybatisMapper;
 import com.contentworkflow.workflow.infrastructure.persistence.mybatis.DraftOperationLockMybatisMapper;
@@ -120,7 +120,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
             @CacheEvict(cacheNames = CacheNames.DRAFT_STATUS_COUNT, allEntries = true)
     })
     public ContentDraft insertDraft(ContentDraft draft) {
-        ContentDraftJpaEntity entity = new ContentDraftJpaEntity();
+        ContentDraftEntity entity = new ContentDraftEntity();
         entity.setVersion(draft.getVersion());
         entity.setBizNo(draft.getBizNo() == null || draft.getBizNo().isBlank()
                 ? "CPW-" + UUID.randomUUID().toString().replace("-", "")
@@ -240,7 +240,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
     @Override
     @Transactional
     public ReviewRecord insertReviewRecord(ReviewRecord record) {
-        ReviewRecordJpaEntity entity = new ReviewRecordJpaEntity();
+        ReviewRecordEntity entity = new ReviewRecordEntity();
         entity.setDraftId(record.getDraftId());
         entity.setDraftVersion(record.getDraftVersion());
         entity.setReviewer(record.getReviewer());
@@ -263,7 +263,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
     @Override
     @Transactional
     public ContentSnapshot insertSnapshot(ContentSnapshot snapshot) {
-        ContentSnapshotJpaEntity entity = new ContentSnapshotJpaEntity();
+        ContentSnapshotEntity entity = new ContentSnapshotEntity();
         entity.setDraftId(snapshot.getDraftId());
         entity.setPublishedVersion(snapshot.getPublishedVersion());
         entity.setSourceDraftVersion(snapshot.getSourceDraftVersion());
@@ -294,7 +294,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
         }
         return tasks.stream()
                 .map(task -> {
-                    PublishTaskJpaEntity entity = new PublishTaskJpaEntity();
+                    PublishTaskEntity entity = new PublishTaskEntity();
                     entity.setDraftId(task.getDraftId());
                     entity.setPublishedVersion(task.getPublishedVersion());
                     entity.setTaskType(task.getTaskType());
@@ -324,7 +324,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
     @Override
     @Transactional
     public PublishTask updatePublishTask(PublishTask task) {
-        PublishTaskJpaEntity entity = taskMapper.selectById(task.getId())
+        PublishTaskEntity entity = taskMapper.selectById(task.getId())
                 .orElseThrow(() -> new IllegalStateException("task not found: " + task.getId()));
         entity.setStatus(task.getStatus());
         entity.setRetryTimes(task.getRetryTimes());
@@ -352,11 +352,11 @@ public class MybatisWorkflowStore implements WorkflowStore {
             return List.of();
         }
         LocalDateTime lockExpiredBefore = now.minusSeconds(Math.max(1, lockSeconds));
-        List<PublishTaskJpaEntity> runnable = taskMapper.selectRunnableForUpdate(now, lockExpiredBefore, limit);
+        List<PublishTaskEntity> runnable = taskMapper.selectRunnableForUpdate(now, lockExpiredBefore, limit);
         if (runnable.isEmpty()) {
             return List.of();
         }
-        for (PublishTaskJpaEntity entity : runnable) {
+        for (PublishTaskEntity entity : runnable) {
             entity.setStatus(PublishTaskStatus.RUNNING);
             entity.setLockedBy(workerId);
             entity.setLockedAt(now);
@@ -382,7 +382,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
             throw new IllegalArgumentException("draftId/commandType/idempotencyKey required");
         }
         try {
-            PublishCommandJpaEntity entity = toCommandEntity(entry);
+            PublishCommandEntity entity = toCommandEntity(entry);
             entity.prepareForInsert();
             commandMapper.insert(entity);
             return true;
@@ -397,7 +397,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
         if (entry == null || entry.getDraftId() == null || entry.getCommandType() == null || entry.getIdempotencyKey() == null) {
             throw new IllegalArgumentException("draftId/commandType/idempotencyKey required");
         }
-        PublishCommandJpaEntity entity = commandMapper.selectByUniqueKey(entry.getDraftId(), entry.getCommandType(), entry.getIdempotencyKey())
+        PublishCommandEntity entity = commandMapper.selectByUniqueKey(entry.getDraftId(), entry.getCommandType(), entry.getIdempotencyKey())
                 .orElseThrow(() -> new IllegalStateException("publish command not found"));
         entity.setOperatorName(entry.getOperatorName());
         entity.setRemark(entry.getRemark());
@@ -421,7 +421,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
     @Override
     @Transactional
     public PublishLogEntry insertPublishLog(PublishLogEntry entry) {
-        PublishLogJpaEntity entity = new PublishLogJpaEntity();
+        PublishLogEntity entity = new PublishLogEntity();
         entity.setDraftId(entry.getDraftId());
         entity.setTraceId(entry.getTraceId());
         entity.setRequestId(entry.getRequestId());
@@ -490,7 +490,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
     }
 
     private RuntimeException resolveConditionalUpdateFailure(ContentDraft draft, EnumSet<WorkflowStatus> expectedStatuses) {
-        ContentDraftJpaEntity current = draftMapper.selectById(draft.getId())
+        ContentDraftEntity current = draftMapper.selectById(draft.getId())
                 .orElseThrow(() -> new IllegalStateException("draft not found: " + draft.getId()));
         if (draft.getVersion() == null || !draft.getVersion().equals(current.getVersion())) {
             throw concurrentModification(draft.getId(), draft.getVersion(), current.getVersion());
@@ -518,7 +518,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
         );
     }
 
-    private ContentDraft toDomain(ContentDraftJpaEntity entity) {
+    private ContentDraft toDomain(ContentDraftEntity entity) {
         return ContentDraft.builder()
                 .id(entity.getId())
                 .version(entity.getVersion())
@@ -536,7 +536,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
                 .build();
     }
 
-    private ReviewRecord toReviewRecord(ReviewRecordJpaEntity entity) {
+    private ReviewRecord toReviewRecord(ReviewRecordEntity entity) {
         return ReviewRecord.builder()
                 .id(entity.getId())
                 .draftId(entity.getDraftId())
@@ -548,7 +548,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
                 .build();
     }
 
-    private ContentSnapshot toSnapshot(ContentSnapshotJpaEntity entity) {
+    private ContentSnapshot toSnapshot(ContentSnapshotEntity entity) {
         return ContentSnapshot.builder()
                 .id(entity.getId())
                 .draftId(entity.getDraftId())
@@ -563,7 +563,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
                 .build();
     }
 
-    private PublishTask toPublishTask(PublishTaskJpaEntity entity) {
+    private PublishTask toPublishTask(PublishTaskEntity entity) {
         return PublishTask.builder()
                 .id(entity.getId())
                 .draftId(entity.getDraftId())
@@ -580,8 +580,8 @@ public class MybatisWorkflowStore implements WorkflowStore {
                 .build();
     }
 
-    private PublishCommandJpaEntity toCommandEntity(PublishCommandEntry entry) {
-        PublishCommandJpaEntity entity = new PublishCommandJpaEntity();
+    private PublishCommandEntity toCommandEntity(PublishCommandEntry entry) {
+        PublishCommandEntity entity = new PublishCommandEntity();
         entity.setDraftId(entry.getDraftId());
         entity.setCommandType(entry.getCommandType());
         entity.setIdempotencyKey(entry.getIdempotencyKey());
@@ -596,7 +596,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
         return entity;
     }
 
-    private PublishCommandEntry toCommandEntry(PublishCommandJpaEntity entity) {
+    private PublishCommandEntry toCommandEntry(PublishCommandEntity entity) {
         return PublishCommandEntry.builder()
                 .id(entity.getId())
                 .draftId(entity.getDraftId())
@@ -613,7 +613,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
                 .build();
     }
 
-    private PublishLogEntry toPublishLogEntry(PublishLogJpaEntity entity) {
+    private PublishLogEntry toPublishLogEntry(PublishLogEntity entity) {
         return PublishLogEntry.builder()
                 .id(entity.getId())
                 .draftId(entity.getDraftId())
@@ -637,7 +637,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
                 .build();
     }
 
-    private DraftOperationLockEntry toLockEntry(DraftOperationLockJpaEntity entity) {
+    private DraftOperationLockEntry toLockEntry(DraftOperationLockEntity entity) {
         return DraftOperationLockEntry.builder()
                 .draftId(entity.getDraftId())
                 .operationType(entity.getOperationType())

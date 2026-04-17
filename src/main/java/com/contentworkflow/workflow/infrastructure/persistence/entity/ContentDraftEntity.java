@@ -10,7 +10,7 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 @NoArgsConstructor
-public class ContentDraftJpaEntity {
+public class ContentDraftEntity {
 
     private Long id;
     private Long version;

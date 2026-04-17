@@ -1,7 +1,7 @@
 package com.contentworkflow.workflow.infrastructure.persistence.mybatis;
 
 import com.contentworkflow.workflow.domain.enums.PublishTaskStatus;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishTaskJpaEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishTaskEntity;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
@@ -12,17 +12,17 @@ import java.util.Optional;
 @Mapper
 public interface PublishTaskMybatisMapper {
 
-    int insert(PublishTaskJpaEntity entity);
+    int insert(PublishTaskEntity entity);
 
-    int update(PublishTaskJpaEntity entity);
+    int update(PublishTaskEntity entity);
 
-    Optional<PublishTaskJpaEntity> selectById(Long id);
+    Optional<PublishTaskEntity> selectById(Long id);
 
-    List<PublishTaskJpaEntity> selectByStatusOrderByUpdatedAtAsc(PublishTaskStatus status);
+    List<PublishTaskEntity> selectByStatusOrderByUpdatedAtAsc(PublishTaskStatus status);
 
-    List<PublishTaskJpaEntity> selectByDraftIdOrderByUpdatedAtDesc(Long draftId);
+    List<PublishTaskEntity> selectByDraftIdOrderByUpdatedAtDesc(Long draftId);
 
-    List<PublishTaskJpaEntity> selectRunnableForUpdate(@Param("now") LocalDateTime now,
+    List<PublishTaskEntity> selectRunnableForUpdate(@Param("now") LocalDateTime now,
                                                        @Param("lockExpiredBefore") LocalDateTime lockExpiredBefore,
                                                        @Param("limit") int limit);
 }

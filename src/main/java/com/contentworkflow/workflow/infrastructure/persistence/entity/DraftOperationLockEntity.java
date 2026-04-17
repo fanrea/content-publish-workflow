@@ -10,7 +10,7 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 @NoArgsConstructor
-public class DraftOperationLockJpaEntity {
+public class DraftOperationLockEntity {
 
     private Long draftId;
     private DraftOperationType operationType;

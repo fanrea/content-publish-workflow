@@ -17,7 +17,7 @@
         published_at
     </sql>
 
-    <insert id="insert" parameterType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotJpaEntity"
+    <insert id="insert" parameterType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotEntity"
             useGeneratedKeys="true" keyProperty="id">
         insert into content_publish_snapshot (
             draft_id,
@@ -42,14 +42,14 @@
         )
     </insert>
 
-    <select id="selectByDraftIdAndPublishedVersion" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotJpaEntity">
+    <select id="selectByDraftIdAndPublishedVersion" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotEntity">
         select <include refid="snapshotColumns" />
         from content_publish_snapshot
         where draft_id = #{draftId}
           and published_version = #{publishedVersion}
     </select>
 
-    <select id="selectLatestByDraftId" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotJpaEntity">
+    <select id="selectLatestByDraftId" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotEntity">
         select <include refid="snapshotColumns" />
         from content_publish_snapshot
         where draft_id = #{draftId}
@@ -57,7 +57,7 @@
         limit 1
     </select>
 
-    <select id="selectByDraftIdOrderByPublishedVersionDesc" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotJpaEntity">
+    <select id="selectByDraftIdOrderByPublishedVersionDesc" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotEntity">
         select <include refid="snapshotColumns" />
         from content_publish_snapshot
         where draft_id = #{draftId}

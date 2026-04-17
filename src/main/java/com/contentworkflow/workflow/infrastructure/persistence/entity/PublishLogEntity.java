@@ -11,7 +11,7 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 @NoArgsConstructor
-public class PublishLogJpaEntity {
+public class PublishLogEntity {
 
     private Long id;
     private Long draftId;

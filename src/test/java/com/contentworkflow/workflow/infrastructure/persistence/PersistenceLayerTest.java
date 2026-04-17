@@ -11,12 +11,12 @@ import com.contentworkflow.workflow.domain.enums.PublishTaskStatus;
 import com.contentworkflow.workflow.domain.enums.PublishTaskType;
 import com.contentworkflow.workflow.domain.enums.ReviewDecision;
 import com.contentworkflow.workflow.domain.enums.WorkflowStatus;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftJpaEntity;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotJpaEntity;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishCommandJpaEntity;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishLogJpaEntity;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishTaskJpaEntity;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.ReviewRecordJpaEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishCommandEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishLogEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishTaskEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.ReviewRecordEntity;
 import com.contentworkflow.workflow.infrastructure.persistence.mybatis.ContentDraftMybatisMapper;
 import com.contentworkflow.workflow.infrastructure.persistence.mybatis.ContentSnapshotMybatisMapper;
 import com.contentworkflow.workflow.infrastructure.persistence.mybatis.DraftOperationLockMybatisMapper;
@@ -76,7 +76,7 @@ class PersistenceLayerTest {
 
     @Test
     void mappers_canPersistAndQuery() {
-        ContentDraftJpaEntity draft = new ContentDraftJpaEntity();
+        ContentDraftEntity draft = new ContentDraftEntity();
         draft.setBizNo("BIZ-001");
         draft.setTitle("t");
         draft.setSummary("s");
@@ -95,7 +95,7 @@ class PersistenceLayerTest {
                 DraftQueryRequest.DraftSortBy.UPDATED_AT, DraftQueryRequest.SortDirection.DESC,
                 null, null, null, null))).containsEntry(WorkflowStatus.DRAFT, 1L);
 
-        ReviewRecordJpaEntity review = new ReviewRecordJpaEntity();
+        ReviewRecordEntity review = new ReviewRecordEntity();
         review.setDraftId(draft.getId());
         review.setDraftVersion(1);
         review.setReviewer("op");
@@ -107,7 +107,7 @@ class PersistenceLayerTest {
         assertThat(review.getId()).isNotNull();
         assertThat(reviewMapper.selectLatestByDraftId(draft.getId())).isPresent();
 
-        ContentSnapshotJpaEntity snapshot = new ContentSnapshotJpaEntity();
+        ContentSnapshotEntity snapshot = new ContentSnapshotEntity();
         snapshot.setDraftId(draft.getId());
         snapshot.setPublishedVersion(1);
         snapshot.setSourceDraftVersion(1);
@@ -122,7 +122,7 @@ class PersistenceLayerTest {
         assertThat(snapshot.getId()).isNotNull();
         assertThat(snapshotMapper.selectByDraftIdAndPublishedVersion(draft.getId(), 1)).isPresent();
 
-        PublishTaskJpaEntity task = new PublishTaskJpaEntity();
+        PublishTaskEntity task = new PublishTaskEntity();
         task.setDraftId(draft.getId());
         task.setPublishedVersion(1);
         task.setTaskType(PublishTaskType.REFRESH_SEARCH_INDEX);
@@ -135,7 +135,7 @@ class PersistenceLayerTest {
         assertThat(task.getId()).isNotNull();
         assertThat(taskMapper.selectByStatusOrderByUpdatedAtAsc(PublishTaskStatus.PENDING)).isNotEmpty();
 
-        PublishCommandJpaEntity command = new PublishCommandJpaEntity();
+        PublishCommandEntity command = new PublishCommandEntity();
         command.setDraftId(draft.getId());
         command.setCommandType("PUBLISH");
         command.setIdempotencyKey("cmd-001");
@@ -152,7 +152,7 @@ class PersistenceLayerTest {
         assertThat(commandMapper.selectByUniqueKey(draft.getId(), "PUBLISH", "cmd-001")).isPresent();
         assertThat(commandMapper.selectByDraftIdOrderByCreatedAtDesc(draft.getId())).isNotEmpty();
 
-        PublishLogJpaEntity log = new PublishLogJpaEntity();
+        PublishLogEntity log = new PublishLogEntity();
         log.setDraftId(draft.getId());
         log.setActionType("PUBLISH");
         log.setOperatorName("op");
@@ -166,7 +166,7 @@ class PersistenceLayerTest {
 
     @Test
     void workflowStore_shouldRejectStaleDraftVersion() {
-        ContentDraftJpaEntity draft = createDraft("BIZ-CONCURRENT-001");
+        ContentDraftEntity draft = createDraft("BIZ-CONCURRENT-001");
         com.contentworkflow.workflow.domain.entity.ContentDraft stale = store.findDraftById(draft.getId()).orElseThrow();
 
         draft.setTitle("t2");
@@ -195,7 +195,7 @@ class PersistenceLayerTest {
 
     @Test
     void workflowStore_shouldRejectUnexpectedDraftStateForConditionalUpdate() {
-        ContentDraftJpaEntity draft = createDraft("BIZ-STATE-001");
+        ContentDraftEntity draft = createDraft("BIZ-STATE-001");
 
         int transitioned = draftMapper.conditionalUpdate(
                 draft.getId(),
@@ -227,7 +227,7 @@ class PersistenceLayerTest {
 
     @Test
     void workflowStore_shouldAcquireAndReleaseDraftOperationLock() {
-        ContentDraftJpaEntity draft = createDraft("BIZ-LOCK-001");
+        ContentDraftEntity draft = createDraft("BIZ-LOCK-001");
 
         LocalDateTime now = LocalDateTime.now();
         DraftOperationLockEntry lock = DraftOperationLockEntry.builder()
@@ -307,8 +307,8 @@ class PersistenceLayerTest {
                 .containsExactly(second.getId(), first.getId());
     }
 
-    private ContentDraftJpaEntity createDraft(String bizNo) {
-        ContentDraftJpaEntity draft = new ContentDraftJpaEntity();
+    private ContentDraftEntity createDraft(String bizNo) {
+        ContentDraftEntity draft = new ContentDraftEntity();
         draft.setBizNo(bizNo);
         draft.setTitle("t1");
         draft.setSummary("s1");

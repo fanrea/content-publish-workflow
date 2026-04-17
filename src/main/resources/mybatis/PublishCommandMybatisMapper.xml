@@ -19,7 +19,7 @@
         updated_at
     </sql>
 
-    <insert id="insert" parameterType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishCommandJpaEntity"
+    <insert id="insert" parameterType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishCommandEntity"
             useGeneratedKeys="true" keyProperty="id">
         insert into content_publish_command (
             draft_id,
@@ -48,7 +48,7 @@
         )
     </insert>
 
-    <update id="update" parameterType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishCommandJpaEntity">
+    <update id="update" parameterType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishCommandEntity">
         update content_publish_command
         set operator_name = #{operatorName},
             remark = #{remark},
@@ -60,7 +60,7 @@
         where id = #{id}
     </update>
 
-    <select id="selectByUniqueKey" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishCommandJpaEntity">
+    <select id="selectByUniqueKey" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishCommandEntity">
         select <include refid="commandColumns" />
         from content_publish_command
         where draft_id = #{draftId}
@@ -68,7 +68,7 @@
           and idempotency_key = #{idempotencyKey}
     </select>
 
-    <select id="selectByDraftIdOrderByCreatedAtDesc" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishCommandJpaEntity">
+    <select id="selectByDraftIdOrderByCreatedAtDesc" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishCommandEntity">
         select <include refid="commandColumns" />
         from content_publish_command
         where draft_id = #{draftId}

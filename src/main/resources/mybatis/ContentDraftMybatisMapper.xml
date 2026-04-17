@@ -54,25 +54,25 @@
         </where>
     </sql>
 
-    <select id="selectById" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftJpaEntity">
+    <select id="selectById" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftEntity">
         select <include refid="draftColumns" />
         from content_draft
         where id = #{id}
     </select>
 
-    <select id="selectByBizNo" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftJpaEntity">
+    <select id="selectByBizNo" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftEntity">
         select <include refid="draftColumns" />
         from content_draft
         where biz_no = #{bizNo}
     </select>
 
-    <select id="selectAllOrderByUpdatedAtDesc" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftJpaEntity">
+    <select id="selectAllOrderByUpdatedAtDesc" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftEntity">
         select <include refid="draftColumns" />
         from content_draft
         order by updated_at desc, id desc
     </select>
 
-    <select id="selectPage" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftJpaEntity">
+    <select id="selectPage" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftEntity">
         select <include refid="draftColumns" />
         from content_draft
         <include refid="draftWhere" />
@@ -93,7 +93,7 @@
         group by workflow_status
     </select>
 
-    <insert id="insert" parameterType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftJpaEntity"
+    <insert id="insert" parameterType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftEntity"
             useGeneratedKeys="true" keyProperty="id">
         insert into content_draft (
             lock_version,

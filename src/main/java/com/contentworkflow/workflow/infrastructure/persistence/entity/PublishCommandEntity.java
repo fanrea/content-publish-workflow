@@ -9,7 +9,7 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 @NoArgsConstructor
-public class PublishCommandJpaEntity {
+public class PublishCommandEntity {
 
     private Long id;
     private Long draftId;

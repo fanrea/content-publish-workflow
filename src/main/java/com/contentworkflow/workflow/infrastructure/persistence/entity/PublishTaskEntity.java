@@ -11,7 +11,7 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 @NoArgsConstructor
-public class PublishTaskJpaEntity {
+public class PublishTaskEntity {
 
     private Long id;
     private Long draftId;

@@ -9,7 +9,7 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 @NoArgsConstructor
-public class ContentSnapshotJpaEntity {
+public class ContentSnapshotEntity {
 
     private Long id;
     private Long draftId;

@@ -4,7 +4,7 @@
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.contentworkflow.workflow.infrastructure.persistence.mybatis.DraftOperationLockMybatisMapper">
 
-    <select id="selectByDraftId" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.DraftOperationLockJpaEntity">
+    <select id="selectByDraftId" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.DraftOperationLockEntity">
         select draft_id, operation_type, target_published_version, locked_by, locked_at, expires_at
         from draft_operation_lock
         where draft_id = #{draftId}

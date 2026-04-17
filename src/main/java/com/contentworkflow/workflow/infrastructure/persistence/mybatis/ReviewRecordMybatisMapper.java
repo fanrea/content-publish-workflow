@@ -1,6 +1,6 @@
 package com.contentworkflow.workflow.infrastructure.persistence.mybatis;
 
-import com.contentworkflow.workflow.infrastructure.persistence.entity.ReviewRecordJpaEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.ReviewRecordEntity;
 import org.apache.ibatis.annotations.Mapper;
 
 import java.util.List;
@@ -9,9 +9,9 @@ import java.util.Optional;
 @Mapper
 public interface ReviewRecordMybatisMapper {
 
-    int insert(ReviewRecordJpaEntity entity);
+    int insert(ReviewRecordEntity entity);
 
-    List<ReviewRecordJpaEntity> selectByDraftIdOrderByReviewedAtDesc(Long draftId);
+    List<ReviewRecordEntity> selectByDraftIdOrderByReviewedAtDesc(Long draftId);
 
-    Optional<ReviewRecordJpaEntity> selectLatestByDraftId(Long draftId);
+    Optional<ReviewRecordEntity> selectLatestByDraftId(Long draftId);
 }

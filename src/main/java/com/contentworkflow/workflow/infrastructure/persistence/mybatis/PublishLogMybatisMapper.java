@@ -1,6 +1,6 @@
 package com.contentworkflow.workflow.infrastructure.persistence.mybatis;
 
-import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishLogJpaEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishLogEntity;
 import org.apache.ibatis.annotations.Mapper;
 
 import java.util.List;
@@ -8,9 +8,9 @@ import java.util.List;
 @Mapper
 public interface PublishLogMybatisMapper {
 
-    int insert(PublishLogJpaEntity entity);
+    int insert(PublishLogEntity entity);
 
-    List<PublishLogJpaEntity> selectByDraftIdOrderByCreatedAtDesc(Long draftId);
+    List<PublishLogEntity> selectByDraftIdOrderByCreatedAtDesc(Long draftId);
 
-    List<PublishLogJpaEntity> selectByTraceIdOrderByCreatedAtAsc(String traceId);
+    List<PublishLogEntity> selectByTraceIdOrderByCreatedAtAsc(String traceId);
 }

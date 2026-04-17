@@ -10,7 +10,7 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 @NoArgsConstructor
-public class ReviewRecordJpaEntity {
+public class ReviewRecordEntity {
 
     private Long id;
     private Long draftId;

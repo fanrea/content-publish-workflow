@@ -1,7 +1,7 @@
 package com.contentworkflow.workflow.infrastructure.persistence.mybatis;
 
 import com.contentworkflow.workflow.domain.enums.DraftOperationType;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.DraftOperationLockJpaEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.DraftOperationLockEntity;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
@@ -11,7 +11,7 @@ import java.util.Optional;
 @Mapper
 public interface DraftOperationLockMybatisMapper {
 
-    Optional<DraftOperationLockJpaEntity> selectByDraftId(Long draftId);
+    Optional<DraftOperationLockEntity> selectByDraftId(Long draftId);
 
     int insertLock(@Param("draftId") Long draftId,
                    @Param("operationType") String operationType,

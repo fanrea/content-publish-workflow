@@ -26,7 +26,7 @@
         created_at
     </sql>
 
-    <insert id="insert" parameterType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishLogJpaEntity"
+    <insert id="insert" parameterType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishLogEntity"
             useGeneratedKeys="true" keyProperty="id">
         insert into content_publish_log (
             draft_id,
@@ -69,14 +69,14 @@
         )
     </insert>
 
-    <select id="selectByDraftIdOrderByCreatedAtDesc" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishLogJpaEntity">
+    <select id="selectByDraftIdOrderByCreatedAtDesc" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishLogEntity">
         select <include refid="logColumns" />
         from content_publish_log
         where draft_id = #{draftId}
         order by created_at desc, id desc
     </select>
 
-    <select id="selectByTraceIdOrderByCreatedAtAsc" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishLogJpaEntity">
+    <select id="selectByTraceIdOrderByCreatedAtAsc" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishLogEntity">
         select <include refid="logColumns" />
         from content_publish_log
         where trace_id = #{traceId}

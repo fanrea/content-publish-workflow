@@ -14,7 +14,7 @@
         reviewed_at
     </sql>
 
-    <insert id="insert" parameterType="com.contentworkflow.workflow.infrastructure.persistence.entity.ReviewRecordJpaEntity"
+    <insert id="insert" parameterType="com.contentworkflow.workflow.infrastructure.persistence.entity.ReviewRecordEntity"
             useGeneratedKeys="true" keyProperty="id">
         insert into content_review_record (
             draft_id,
@@ -33,14 +33,14 @@
         )
     </insert>
 
-    <select id="selectByDraftIdOrderByReviewedAtDesc" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ReviewRecordJpaEntity">
+    <select id="selectByDraftIdOrderByReviewedAtDesc" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ReviewRecordEntity">
         select <include refid="reviewColumns" />
         from content_review_record
         where draft_id = #{draftId}
         order by reviewed_at desc, id desc
     </select>
 
-    <select id="selectLatestByDraftId" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ReviewRecordJpaEntity">
+    <select id="selectLatestByDraftId" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ReviewRecordEntity">
         select <include refid="reviewColumns" />
         from content_review_record
         where draft_id = #{draftId}

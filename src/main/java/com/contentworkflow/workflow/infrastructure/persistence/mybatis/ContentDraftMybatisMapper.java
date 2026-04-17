@@ -1,7 +1,7 @@
 package com.contentworkflow.workflow.infrastructure.persistence.mybatis;
 
 import com.contentworkflow.workflow.domain.enums.WorkflowStatus;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftJpaEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftEntity;
 import com.contentworkflow.workflow.interfaces.dto.DraftQueryRequest;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -14,13 +14,13 @@ import java.util.Optional;
 @Mapper
 public interface ContentDraftMybatisMapper {
 
-    Optional<ContentDraftJpaEntity> selectById(Long id);
+    Optional<ContentDraftEntity> selectById(Long id);
 
-    Optional<ContentDraftJpaEntity> selectByBizNo(String bizNo);
+    Optional<ContentDraftEntity> selectByBizNo(String bizNo);
 
-    List<ContentDraftJpaEntity> selectAllOrderByUpdatedAtDesc();
+    List<ContentDraftEntity> selectAllOrderByUpdatedAtDesc();
 
-    List<ContentDraftJpaEntity> selectPage(@Param("request") DraftQueryRequest request,
+    List<ContentDraftEntity> selectPage(@Param("request") DraftQueryRequest request,
                                            @Param("offset") int offset,
                                            @Param("limit") int limit,
                                            @Param("sortColumn") String sortColumn,
@@ -30,7 +30,7 @@ public interface ContentDraftMybatisMapper {
 
     List<DraftStatusCountRow> countByStatus(@Param("request") DraftQueryRequest request);
 
-    int insert(ContentDraftJpaEntity entity);
+    int insert(ContentDraftEntity entity);
 
     int conditionalUpdate(@Param("id") Long id,
                           @Param("expectedVersion") Long expectedVersion,
