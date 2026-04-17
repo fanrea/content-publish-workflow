@@ -1,11 +1,13 @@
 package com.contentworkflow.workflow.application.store;
 
 import com.contentworkflow.common.api.PageResponse;
+import com.contentworkflow.common.exception.BusinessException;
 import com.contentworkflow.workflow.domain.entity.ContentDraft;
 import com.contentworkflow.workflow.domain.entity.ContentSnapshot;
 import com.contentworkflow.workflow.domain.entity.PublishTask;
 import com.contentworkflow.workflow.domain.entity.ReviewRecord;
 import com.contentworkflow.workflow.domain.enums.WorkflowStatus;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.DraftOperationLockJpaEntity;
 import com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftJpaEntity;
 import com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotJpaEntity;
 import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishCommandJpaEntity;
@@ -13,6 +15,7 @@ import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishLog
 import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishTaskJpaEntity;
 import com.contentworkflow.workflow.infrastructure.persistence.entity.ReviewRecordJpaEntity;
 import com.contentworkflow.workflow.infrastructure.persistence.mapper.PublishTaskMapper;
+import com.contentworkflow.workflow.infrastructure.persistence.repository.DraftOperationLockJpaRepository;
 import com.contentworkflow.workflow.infrastructure.persistence.repository.ContentDraftJpaRepository;
 import com.contentworkflow.workflow.infrastructure.persistence.repository.ContentSnapshotJpaRepository;
 import com.contentworkflow.workflow.infrastructure.persistence.repository.PublishCommandJpaRepository;
@@ -32,12 +35,14 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -56,6 +61,7 @@ public class JpaWorkflowStore implements WorkflowStore {
     private final PublishTaskJpaRepository taskRepo;
     private final PublishLogJpaRepository logRepo;
     private final PublishCommandJpaRepository commandRepo;
+    private final DraftOperationLockJpaRepository operationLockRepo;
     private final EntityManager entityManager;
 
     /**
@@ -76,6 +82,7 @@ public class JpaWorkflowStore implements WorkflowStore {
                             PublishTaskJpaRepository taskRepo,
                             PublishLogJpaRepository logRepo,
                             PublishCommandJpaRepository commandRepo,
+                            DraftOperationLockJpaRepository operationLockRepo,
                             EntityManager entityManager) {
         this.draftRepo = draftRepo;
         this.reviewRepo = reviewRepo;
@@ -83,6 +90,7 @@ public class JpaWorkflowStore implements WorkflowStore {
         this.taskRepo = taskRepo;
         this.logRepo = logRepo;
         this.commandRepo = commandRepo;
+        this.operationLockRepo = operationLockRepo;
         this.entityManager = entityManager;
     }
 
@@ -172,6 +180,7 @@ public class JpaWorkflowStore implements WorkflowStore {
     @Transactional
     public ContentDraft insertDraft(ContentDraft draft) {
         ContentDraftJpaEntity entity = new ContentDraftJpaEntity();
+        entity.setVersion(draft.getVersion());
         entity.setBizNo(draft.getBizNo() == null || draft.getBizNo().isBlank()
                 ? "CPW-" + UUID.randomUUID().toString().replace("-", "")
                 : draft.getBizNo());
@@ -203,6 +212,69 @@ public class JpaWorkflowStore implements WorkflowStore {
         return draftRepo.findById(draftId).map(this::toDomain);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<DraftOperationLockEntry> findDraftOperationLock(Long draftId) {
+        return operationLockRepo.findById(draftId).map(this::toLockEntry);
+    }
+
+    @Override
+    @Transactional
+    public boolean tryAcquireDraftOperationLock(DraftOperationLockEntry lockEntry, LocalDateTime now) {
+        if (lockEntry == null || lockEntry.getDraftId() == null) {
+            throw new IllegalArgumentException("lockEntry/draftId required");
+        }
+        try {
+            operationLockRepo.insertLock(
+                    lockEntry.getDraftId(),
+                    lockEntry.getOperationType().name(),
+                    lockEntry.getTargetPublishedVersion(),
+                    lockEntry.getLockedBy(),
+                    lockEntry.getLockedAt(),
+                    lockEntry.getExpiresAt()
+            );
+            return true;
+        } catch (DataIntegrityViolationException ex) {
+            return operationLockRepo.replaceExpiredLock(
+                    lockEntry.getDraftId(),
+                    lockEntry.getOperationType(),
+                    lockEntry.getTargetPublishedVersion(),
+                    lockEntry.getLockedBy(),
+                    lockEntry.getLockedAt(),
+                    lockEntry.getExpiresAt(),
+                    now
+            ) > 0;
+        }
+    }
+
+    @Override
+    @Transactional
+    public boolean renewDraftOperationLock(Long draftId,
+                                           Integer targetPublishedVersion,
+                                           String lockedBy,
+                                           LocalDateTime lockedAt,
+                                           LocalDateTime expiresAt) {
+        if (draftId == null) {
+            throw new IllegalArgumentException("draftId required");
+        }
+        return operationLockRepo.renewLock(
+                draftId,
+                targetPublishedVersion,
+                lockedBy,
+                lockedAt,
+                expiresAt
+        ) > 0;
+    }
+
+    @Override
+    @Transactional
+    public boolean releaseDraftOperationLock(Long draftId, Integer targetPublishedVersion) {
+        if (draftId == null) {
+            throw new IllegalArgumentException("draftId required");
+        }
+        return operationLockRepo.deleteMatchingLock(draftId, targetPublishedVersion) > 0;
+    }
+
     /**
      * 根据输入参数更新已有业务对象，并返回更新后的状态。
      *
@@ -212,20 +284,37 @@ public class JpaWorkflowStore implements WorkflowStore {
 
     @Override
     @Transactional
-    public ContentDraft updateDraft(ContentDraft draft) {
-        ContentDraftJpaEntity entity = draftRepo.findById(draft.getId())
-                .orElseThrow(() -> new IllegalStateException("draft not found: " + draft.getId()));
-        entity.setTitle(draft.getTitle());
-        entity.setSummary(draft.getSummary());
-        entity.setBody(draft.getBody());
-        entity.setDraftVersion(draft.getDraftVersion());
-        entity.setPublishedVersion(draft.getPublishedVersion());
-        entity.setWorkflowStatus(draft.getStatus());
-        entity.setCurrentSnapshotId(draft.getCurrentSnapshotId());
-        entity.setLastReviewComment(draft.getLastReviewComment());
-        entity.setUpdatedAt(draft.getUpdatedAt());
-        ContentDraftJpaEntity saved = draftRepo.save(entity);
-        return toDomain(saved);
+    public ContentDraft updateDraft(ContentDraft draft, EnumSet<WorkflowStatus> expectedStatuses) {
+        EnumSet<WorkflowStatus> requiredStatuses = normalizeExpectedStatuses(expectedStatuses);
+        try {
+            int updated = draftRepo.conditionalUpdate(
+                    draft.getId(),
+                    draft.getVersion(),
+                    requiredStatuses,
+                    draft.getBizNo(),
+                    draft.getTitle(),
+                    draft.getSummary(),
+                    draft.getBody(),
+                    draft.getDraftVersion(),
+                    draft.getPublishedVersion(),
+                    draft.getStatus(),
+                    draft.getCurrentSnapshotId(),
+                    draft.getLastReviewComment(),
+                    draft.getUpdatedAt()
+            );
+            if (updated == 0) {
+                throw resolveConditionalUpdateFailure(draft, requiredStatuses);
+            }
+            entityManager.clear();
+            return draftRepo.findById(draft.getId())
+                    .map(this::toDomain)
+                    .orElseThrow(() -> new IllegalStateException("draft not found after update: " + draft.getId()));
+        } catch (ObjectOptimisticLockingFailureException ex) {
+            Long currentVersion = draftRepo.findById(draft.getId())
+                    .map(ContentDraftJpaEntity::getVersion)
+                    .orElse(null);
+            throw concurrentModification(draft.getId(), draft.getVersion(), currentVersion);
+        }
     }
 
     /**
@@ -588,6 +677,7 @@ public class JpaWorkflowStore implements WorkflowStore {
     private ContentDraft toDomain(ContentDraftJpaEntity entity) {
         return ContentDraft.builder()
                 .id(entity.getId())
+                .version(entity.getVersion())
                 .bizNo(entity.getBizNo())
                 .title(entity.getTitle())
                 .summary(entity.getSummary())
@@ -676,6 +766,28 @@ public class JpaWorkflowStore implements WorkflowStore {
 
     private PublishTask toDomain(PublishTaskJpaEntity entity) {
         return PublishTaskMapper.toDomain(entity);
+    }
+
+    private DraftOperationLockEntry toLockEntry(DraftOperationLockJpaEntity entity) {
+        return DraftOperationLockEntry.builder()
+                .draftId(entity.getDraftId())
+                .operationType(entity.getOperationType())
+                .targetPublishedVersion(entity.getTargetPublishedVersion())
+                .lockedBy(entity.getLockedBy())
+                .lockedAt(entity.getLockedAt())
+                .expiresAt(entity.getExpiresAt())
+                .build();
+    }
+
+    private DraftOperationLockJpaEntity toLockEntity(DraftOperationLockEntry entry) {
+        DraftOperationLockJpaEntity entity = new DraftOperationLockJpaEntity();
+        entity.setDraftId(entry.getDraftId());
+        entity.setOperationType(entry.getOperationType());
+        entity.setTargetPublishedVersion(entry.getTargetPublishedVersion());
+        entity.setLockedBy(entry.getLockedBy());
+        entity.setLockedAt(entry.getLockedAt());
+        entity.setExpiresAt(entry.getExpiresAt());
+        return entity;
     }
 
     /**
@@ -774,5 +886,41 @@ public class JpaWorkflowStore implements WorkflowStore {
             case UPDATED_AT -> "updatedAt";
         };
         return Sort.by(direction, property).and(Sort.by(direction, "id"));
+    }
+
+    private EnumSet<WorkflowStatus> normalizeExpectedStatuses(EnumSet<WorkflowStatus> expectedStatuses) {
+        if (expectedStatuses == null || expectedStatuses.isEmpty()) {
+            return EnumSet.allOf(WorkflowStatus.class);
+        }
+        return EnumSet.copyOf(expectedStatuses);
+    }
+
+    private RuntimeException resolveConditionalUpdateFailure(ContentDraft draft, EnumSet<WorkflowStatus> expectedStatuses) {
+        ContentDraftJpaEntity current = draftRepo.findById(draft.getId())
+                .orElseThrow(() -> new IllegalStateException("draft not found: " + draft.getId()));
+        if (draft.getVersion() == null || !draft.getVersion().equals(current.getVersion())) {
+            throw concurrentModification(draft.getId(), draft.getVersion(), current.getVersion());
+        }
+        if (!expectedStatuses.contains(current.getWorkflowStatus())) {
+            throw invalidWorkflowState(expectedStatuses, current.getWorkflowStatus());
+        }
+        return new IllegalStateException("conditional draft update affected 0 rows unexpectedly");
+    }
+
+    private BusinessException concurrentModification(Long draftId, Long expectedVersion, Long actualVersion) {
+        return new BusinessException(
+                "CONCURRENT_MODIFICATION",
+                "draft changed concurrently"
+                        + (draftId == null ? "" : ", draftId=" + draftId)
+                        + (expectedVersion == null ? "" : ", expectedVersion=" + expectedVersion)
+                        + (actualVersion == null ? "" : ", actualVersion=" + actualVersion)
+        );
+    }
+
+    private BusinessException invalidWorkflowState(EnumSet<WorkflowStatus> expectedStatuses, WorkflowStatus actualStatus) {
+        return new BusinessException(
+                "INVALID_WORKFLOW_STATE",
+                "draft state precondition failed, expected one of " + expectedStatuses + ", current state: " + actualStatus
+        );
     }
 }

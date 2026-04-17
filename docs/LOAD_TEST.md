@@ -1,79 +1,183 @@
-﻿# Load Test（压测与基准测试资产）
+# 压测说明
 
-本项目的压测目标不是“跑一个漂亮数字”，而是形成一套可复用的压测资产，能向面试官展示你对：
-- 基准测试方法
-- 指标采集（Prometheus）
-- 压测数据准备（SQL seed）
-- 结果解读与瓶颈定位（延迟/RPS/错误率/线程/GC）
+这份文档说明项目当前有哪些压测资产、适合压哪些接口，以及压测结果应该怎么解读。
 
-有完整闭环。
+## 一、压测目标
 
-## 环境准备（推荐 MySQL）
+项目做压测的目的不是追求一个漂亮的 QPS 数字，而是验证下面几件事：
 
-1) 建表（MySQL 8.x）：
+- 列表和统计接口在读多场景下是否稳定
+- 写接口在工作流推进场景下是否能保持正确行为
+- Redis、MySQL、Tomcat 参数是否明显影响吞吐和延迟
+- 指标和日志是否足够支撑瓶颈定位
+
+## 二、压测准备
+
+### 1. 推荐环境
+
+建议使用：
+
+- MySQL
+- `loadtest` profile
+- `ops` profile
+
+推荐启动方式：
+
+```bash
+SPRING_PROFILES_ACTIVE=mysql,loadtest,ops
+SERVER_PORT=8080
+MANAGEMENT_PORT=8081
+```
+
+### 2. 初始化数据库
+
+先建表：
 
 ```bash
 mysql -uroot -p cpw < sql/schema.sql
 ```
 
-2) 可选：灌入演示数据（列表页压测更稳定）：
+如需准备较稳定的列表页数据，再导入演示数据：
 
 ```bash
 mysql -uroot -p cpw < sql/seed_demo.sql
 ```
 
-## 启动服务（loadtest + ops）
+## 三、现有压测脚本
 
-建议启用 `loadtest` 调整线程/连接参数，同时启用 `ops` 暴露 Prometheus 直方图与更多运维端点：
+脚本目录：
+
+- `docs/loadtest/k6_read.js`
+- `docs/loadtest/k6_write.js`
+
+### 1. 读压测脚本
+
+`k6_read.js` 主要覆盖：
+
+- 草稿分页接口
+- 草稿状态统计接口
+- 草稿摘要接口
+
+适合验证：
+
+- 列表页性能
+- 状态统计性能
+- 缓存收益
+
+### 2. 写压测脚本
+
+`k6_write.js` 主要覆盖：
+
+- 创建草稿
+- 更新草稿
+- 提交审核
+- 审核通过
+- 发起发布
+
+适合验证：
+
+- 工作流写链路的稳定性
+- 发布主事务吞吐
+- 并发写入时的基本行为
+
+## 四、运行方式
+
+### 1. 读压测
 
 ```bash
-SPRING_PROFILES_ACTIVE=loadtest,ops,mysql
-SERVER_PORT=8080
-MANAGEMENT_PORT=8081
+k6 run -e BASE_URL=http://127.0.0.1:8080 docs/loadtest/k6_read.js
 ```
 
-压测时建议使用 `/actuator/prometheus` 观察：
-- `http_server_requests_seconds_*`（吞吐/延迟）
-- `jvm_*`（GC/内存）
-- `tomcat_*`（线程/连接）
+### 2. 写压测
 
-Prometheus/Grafana 资产见：
+```bash
+k6 run -e BASE_URL=http://127.0.0.1:8080 docs/loadtest/k6_write.js
+```
+
+## 五、压测时重点观察什么
+
+### 1. HTTP 指标
+
+重点看：
+
+- 吞吐
+- 平均延迟
+- P95
+- P99
+- 错误率
+
+### 2. JVM 指标
+
+重点看：
+
+- 堆内存使用
+- GC 停顿
+- 线程数
+
+### 3. Tomcat 指标
+
+重点看：
+
+- 当前线程数
+- 最大线程数
+- 连接数
+
+### 4. 数据库表现
+
+重点关注：
+
+- 列表接口是否有效利用索引
+- 状态统计是否成为热点
+- 写压测时事务提交延迟是否明显升高
+
+## 六、推荐配合查看的监控
+
+压测时建议同时打开：
+
+- `/actuator/prometheus`
+- Grafana 面板
+
+相关资产：
+
 - `docs/OBSERVABILITY.md`
 - `docs/observability/prometheus.yml`
 - `docs/observability/grafana-dashboard.json`
 
-## k6 脚本
+## 七、如何解读结果
 
-脚本目录：
-- `docs/loadtest/k6_read.js`：读压测（列表/统计/摘要）
-- `docs/loadtest/k6_write.js`：写压测（创建/更新/提交审核/审核/发布）
+### 1. 读压测延迟高
 
-运行示例：
+优先排查：
 
-```bash
-# 读压测
-k6 run -e BASE_URL=http://127.0.0.1:8080 docs/loadtest/k6_read.js
+- MySQL 是否用了合适索引
+- 是否启用 Redis
+- 分页是否带了 `searchInBody=true`
 
-# 写压测（会写入数据，建议只跑短时间）
-k6 run -e BASE_URL=http://127.0.0.1:8080 docs/loadtest/k6_write.js
-```
+### 2. 写压测延迟高
 
-说明：
-- 写接口需要请求头 `X-Workflow-Role`，脚本已内置最小角色头（EDITOR/REVIEWER/OPERATOR）。
-- 如果你把服务放在网关后面，可以在 k6 里追加 `X-Request-Id` 以便关联日志与指标。
+优先排查：
 
-## 结果解读建议（面试表达）
+- 发布接口是否生成过多任务
+- 审计写入是否增多
+- 事务是否被数据库 I/O 卡住
 
-建议在压测记录里至少保留以下 4 个图：
-- RPS（吞吐）
-- P95/P99 延迟（尾延迟）
-- 5xx 错误率
-- JVM Heap/GC pause
+### 3. 错误率高
 
-并在结论里说明一次“定位与优化”的过程，例如：
-- 哪个接口最慢（uri 维度）
-- 是 DB、线程、连接还是 GC 先成为瓶颈
-- 调整了哪些参数（Tomcat/Hikari/缓存策略/索引）以及指标变化
+优先排查：
 
+- 权限请求头是否传对
+- 数据状态是否冲突
+- 压测脚本是否对同一草稿反复并发推进状态
 
+## 八、压测结论应该怎么写
 
+建议不要只写“QPS=多少”，而是至少包含：
+
+- 哪些接口参与压测
+- 压测环境是什么
+- 数据规模大概多少
+- 主要指标结果
+- 观察到的瓶颈是什么
+- 下一步优化建议是什么
+
+这样压测才有工程价值。

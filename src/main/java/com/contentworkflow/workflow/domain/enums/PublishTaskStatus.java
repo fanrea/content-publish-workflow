@@ -1,34 +1,32 @@
 package com.contentworkflow.workflow.domain.enums;
 
 /**
- * 枚举类型，用于集中定义当前领域中的固定状态、角色或分类值。
+ * Publish task lifecycle states.
  */
 public enum PublishTaskStatus {
     /**
-     * 待执行。
-     *
-     * <p>任务已生成，但尚未被 worker 领取执行。</p>
+     * Task has been created and is waiting to be claimed by a worker.
      */
     PENDING,
     /**
-     * 执行中。
-     *
-     * <p>任务已被某个 worker 领取。持久层可通过行锁/条件更新/分布式锁来避免重复领取。</p>
+     * Task is currently being handled by a worker.
      */
     RUNNING,
     /**
-     * 执行成功。
+     * The request has been dispatched to a downstream integration and is waiting
+     * for explicit confirmation from the consumer side.
+     */
+    AWAITING_CONFIRMATION,
+    /**
+     * Task completed successfully.
      */
     SUCCESS,
     /**
-     * 执行失败（可重试）。
+     * Task failed but can be retried.
      */
     FAILED,
     /**
-     * 死信状态：达到重试上限，不再自动重试。
-     *
-     * <p>需要人工介入或专门的补偿流程。</p>
+     * Task exhausted automatic retries and needs intervention.
      */
     DEAD
 }
-

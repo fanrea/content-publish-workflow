@@ -11,11 +11,13 @@ DROP TABLE IF EXISTS content_publish_command;
 DROP TABLE IF EXISTS content_publish_task;
 DROP TABLE IF EXISTS content_publish_snapshot;
 DROP TABLE IF EXISTS content_review_record;
+DROP TABLE IF EXISTS draft_operation_lock;
 DROP TABLE IF EXISTS content_draft;
 DROP TABLE IF EXISTS workflow_outbox_event;
 
 CREATE TABLE content_draft (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    lock_version BIGINT NOT NULL DEFAULT 0,
     biz_no VARCHAR(64) NOT NULL,
     title VARCHAR(255) NOT NULL,
     summary VARCHAR(500) NOT NULL,
@@ -28,6 +30,16 @@ CREATE TABLE content_draft (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uk_content_draft_biz_no UNIQUE (biz_no)
+);
+
+CREATE TABLE draft_operation_lock (
+    draft_id BIGINT PRIMARY KEY,
+    operation_type VARCHAR(32) NOT NULL,
+    target_published_version INT NULL,
+    locked_by VARCHAR(128) NOT NULL,
+    locked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME NOT NULL,
+    CONSTRAINT fk_draft_operation_lock_draft FOREIGN KEY (draft_id) REFERENCES content_draft(id)
 );
 
 CREATE TABLE content_review_record (
@@ -93,7 +105,6 @@ CREATE TABLE content_publish_log (
     error_message VARCHAR(500) NULL,
     remark VARCHAR(500) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    KEY idx_log_trace_id (trace_id, created_at),
     CONSTRAINT fk_publish_log_draft FOREIGN KEY (draft_id) REFERENCES content_draft(id)
 );
 
@@ -142,6 +153,7 @@ CREATE INDEX idx_content_draft_updated_at ON content_draft (updated_at);
 CREATE INDEX idx_content_draft_created_at ON content_draft (created_at);
 CREATE INDEX idx_content_draft_status_updated ON content_draft (workflow_status, updated_at);
 CREATE INDEX idx_content_draft_status_created ON content_draft (workflow_status, created_at);
+CREATE INDEX idx_draft_operation_lock_expires ON draft_operation_lock (expires_at);
 
 CREATE INDEX idx_review_draft_version ON content_review_record (draft_id, draft_version);
 CREATE INDEX idx_review_draft_time ON content_review_record (draft_id, reviewed_at);
@@ -154,6 +166,7 @@ CREATE INDEX idx_task_lock ON content_publish_task (locked_by, locked_at);
 CREATE INDEX idx_task_draft_status ON content_publish_task (draft_id, task_status);
 
 CREATE INDEX idx_log_draft_time ON content_publish_log (draft_id, created_at);
+CREATE INDEX idx_log_trace_id ON content_publish_log (trace_id, created_at);
 
 CREATE INDEX idx_publish_command_draft_time ON content_publish_command (draft_id, created_at);
 CREATE INDEX idx_publish_command_status ON content_publish_command (command_status, updated_at);

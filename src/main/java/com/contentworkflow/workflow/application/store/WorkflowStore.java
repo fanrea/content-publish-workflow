@@ -10,6 +10,7 @@ import com.contentworkflow.workflow.domain.enums.WorkflowStatus;
 import com.contentworkflow.workflow.interfaces.dto.DraftQueryRequest;
 
 import java.time.LocalDateTime;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -63,6 +64,18 @@ public interface WorkflowStore {
 
     Optional<ContentDraft> findDraftById(Long draftId);
 
+    Optional<DraftOperationLockEntry> findDraftOperationLock(Long draftId);
+
+    boolean tryAcquireDraftOperationLock(DraftOperationLockEntry lockEntry, LocalDateTime now);
+
+    boolean renewDraftOperationLock(Long draftId,
+                                    Integer targetPublishedVersion,
+                                    String lockedBy,
+                                    LocalDateTime lockedAt,
+                                    LocalDateTime expiresAt);
+
+    boolean releaseDraftOperationLock(Long draftId, Integer targetPublishedVersion);
+
     /**
      * 根据输入参数更新已有业务对象，并返回更新后的状态。
      *
@@ -70,7 +83,11 @@ public interface WorkflowStore {
      * @return 方法处理后的结果对象
      */
 
-    ContentDraft updateDraft(ContentDraft draft);
+    default ContentDraft updateDraft(ContentDraft draft) {
+        return updateDraft(draft, EnumSet.allOf(WorkflowStatus.class));
+    }
+
+    ContentDraft updateDraft(ContentDraft draft, EnumSet<WorkflowStatus> expectedStatuses);
 
     /**
      * 处理 insert review record 相关逻辑，并返回对应的执行结果。

@@ -1,6 +1,7 @@
 package com.contentworkflow.workflow.interfaces;
 
 import com.contentworkflow.common.api.PageResponse;
+import com.contentworkflow.common.exception.BusinessException;
 import com.contentworkflow.common.web.GlobalExceptionHandler;
 import com.contentworkflow.common.web.auth.CurrentWorkflowOperatorArgumentResolver;
 import com.contentworkflow.common.web.auth.WorkflowAuthConstants;
@@ -13,6 +14,7 @@ import com.contentworkflow.workflow.domain.enums.WorkflowRole;
 import com.contentworkflow.workflow.domain.enums.WorkflowStatus;
 import com.contentworkflow.workflow.interfaces.dto.CreateDraftRequest;
 import com.contentworkflow.workflow.interfaces.dto.DraftQueryRequest;
+import com.contentworkflow.workflow.interfaces.dto.UpdateDraftRequest;
 import com.contentworkflow.workflow.interfaces.vo.ContentDraftResponse;
 import com.contentworkflow.workflow.interfaces.vo.ContentDraftSummaryResponse;
 import com.contentworkflow.workflow.interfaces.vo.PublishAuditTimelineResponse;
@@ -35,6 +37,7 @@ import static org.mockito.Mockito.when;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -66,6 +69,7 @@ class ContentWorkflowAuthorizationTest {
                 "b",
                 1,
                 0,
+                0L,
                 WorkflowStatus.DRAFT,
                 null,
                 null,
@@ -73,7 +77,7 @@ class ContentWorkflowAuthorizationTest {
                 LocalDateTime.now()
         ));
         when(service.pageDraftSummaries(any(DraftQueryRequest.class))).thenReturn(new PageResponse<>(
-                List.of(new ContentDraftSummaryResponse(1L, "CPW-1", "t", "s", 1, 0, WorkflowStatus.DRAFT, null, null, LocalDateTime.now(), LocalDateTime.now(), null)),
+                List.of(new ContentDraftSummaryResponse(1L, "CPW-1", "t", "s", 1, 0, 0L, WorkflowStatus.DRAFT, null, null, LocalDateTime.now(), LocalDateTime.now(), null)),
                 1L,
                 1,
                 10,
@@ -264,6 +268,28 @@ class ContentWorkflowAuthorizationTest {
     /**
      * 按分页条件查询数据，并返回包含分页元信息的结果。
      */
+
+    @Test
+    void updateDraft_shouldMapConcurrentModificationToConflict() throws Exception {
+        when(service.updateDraft(eq(1L), any(UpdateDraftRequest.class), any(WorkflowOperatorIdentity.class)))
+                .thenThrow(new BusinessException("CONCURRENT_MODIFICATION", "draft changed concurrently"));
+
+        mockMvc.perform(put("/api/workflows/drafts/1")
+                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
+                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
+                        .header(WorkflowAuthConstants.ROLE_HEADER, "EDITOR")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "expectedVersion": 3,
+                                  "title": "t2",
+                                  "summary": "s2",
+                                  "body": "b2"
+                                }
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("CONCURRENT_MODIFICATION"));
+    }
 
     @Test
     void pageEndpoint_shouldRequireAuthentication() throws Exception {

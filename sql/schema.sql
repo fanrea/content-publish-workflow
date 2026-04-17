@@ -9,11 +9,13 @@ DROP TABLE IF EXISTS content_publish_command;
 DROP TABLE IF EXISTS content_publish_task;
 DROP TABLE IF EXISTS content_publish_snapshot;
 DROP TABLE IF EXISTS content_review_record;
+DROP TABLE IF EXISTS draft_operation_lock;
 DROP TABLE IF EXISTS content_draft;
 DROP TABLE IF EXISTS workflow_outbox_event;
 
 CREATE TABLE content_draft (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    lock_version BIGINT NOT NULL DEFAULT 0,
     biz_no VARCHAR(64) NOT NULL,
     title VARCHAR(255) NOT NULL,
     summary VARCHAR(500) NOT NULL,
@@ -31,6 +33,18 @@ CREATE TABLE content_draft (
     KEY idx_content_draft_created_at (created_at),
     KEY idx_content_draft_status_updated (workflow_status, updated_at),
     KEY idx_content_draft_status_created (workflow_status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE draft_operation_lock (
+    draft_id BIGINT PRIMARY KEY,
+    operation_type VARCHAR(32) NOT NULL,
+    target_published_version INT NULL,
+    locked_by VARCHAR(128) NOT NULL,
+    locked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME NOT NULL,
+    KEY idx_draft_operation_lock_expires (expires_at),
+    CONSTRAINT fk_draft_operation_lock_draft
+        FOREIGN KEY (draft_id) REFERENCES content_draft(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE content_review_record (

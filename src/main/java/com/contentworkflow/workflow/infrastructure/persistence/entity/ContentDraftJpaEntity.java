@@ -29,6 +29,10 @@ public class ContentDraftJpaEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Version
+    @Column(name = "lock_version", nullable = false)
+    private Long version;
+
     @Column(name = "biz_no", nullable = false, length = 64, unique = true)
     private String bizNo;
 
@@ -80,6 +84,9 @@ public class ContentDraftJpaEntity {
         }
         if (publishedVersion == null) {
             publishedVersion = 0;
+        }
+        if (version == null) {
+            version = 0L;
         }
         if (workflowStatus == null) {
             workflowStatus = WorkflowStatus.DRAFT;

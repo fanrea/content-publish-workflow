@@ -1,29 +1,20 @@
-﻿# API Design（前后端分离）
+# 接口设计说明
 
-本服务是一个独立的后端 API 服务，不渲染页面，只接收 HTTP 请求并输出 JSON。
+本项目对外提供的是一个纯后端 JSON API，基础路径为 `/api/workflows`。接口设计重点不在“接口长什么样”，而在于接口背后的工作流边界、权限边界和恢复边界是否清晰。
 
-- Base path: `/api/workflows`
-- Content-Type: `application/json`
-- OpenAPI JSON: `GET /v3/api-docs`
-- Swagger UI: `GET /swagger-ui`
+## 一、基础约定
 
-## 请求头约定
+### 1. 协议与路径
 
-受保护的写接口使用轻量角色头：
+- 协议：HTTP
+- 数据格式：JSON
+- 基础路径：`/api/workflows`
+- OpenAPI 文档：`/v3/api-docs`
+- Swagger 页面：`/swagger-ui`
 
-- `X-Workflow-Role: EDITOR`
-- `X-Workflow-Role: REVIEWER`
-- `X-Workflow-Role: OPERATOR`
-- `X-Workflow-Role: ADMIN`
+### 2. 统一返回结构
 
-当前规则：
-- 受保护接口缺少该请求头时返回 `401 UNAUTHORIZED`
-- 角色不存在或权限不足时返回 `403 FORBIDDEN`
-- 只读接口暂时保持开放
-
-## 统一返回结构
-
-所有接口返回统一包裹（见 `com.contentworkflow.common.api.ApiResponse`）：
+所有接口都返回 `ApiResponse<T>`，典型结构如下：
 
 ```json
 {
@@ -31,117 +22,493 @@
   "code": "OK",
   "message": "success",
   "data": {},
-  "timestamp": "2026-04-14T12:00:00"
+  "timestamp": "2026-04-16T12:00:00"
 }
 ```
 
+约定如下：
+
+- `success=true` 表示业务成功
+- `success=false` 表示业务失败
+- HTTP 状态码负责表达错误大类
+- `code` 负责表达业务细分错误
+
+### 3. 分页结构
+
+分页接口返回 `PageResponse<T>`，包含：
+
+- `items`
+- `total`
+- `pageNo`
+- `pageSize`
+- `totalPages`
+
+项目里 `pageNo` 从 `1` 开始。
+
+## 二、请求头约定
+
+### 1. 鉴权与操作人请求头
+
+项目当前使用轻量工作流权限模型，请求头主要包括：
+
+- `X-Workflow-Role`
+- `X-Workflow-Operator-Id`
+- `X-Workflow-Operator-Name`
+- `X-Request-Id`
+
+其中：
+
+- `X-Workflow-Role` 支持单个或多个角色
+- `X-Workflow-Operator-Id` 和 `X-Workflow-Operator-Name` 用于审计日志
+- `X-Request-Id` 用于链路追踪和日志关联
+
+如果缺少必要请求头，会返回 `401`；如果角色不合法或权限不足，会返回 `403`。
+
+### 2. 幂等请求头
+
+发布接口支持幂等键：
+
+- 请求头：`Idempotency-Key`
+- 请求体字段：`idempotencyKey`
+
+如果请求体没有传，控制器会自动读取请求头并补到请求对象里。
+
+## 三、角色与权限
+
+角色有四类：
+
+- `EDITOR`
+- `REVIEWER`
+- `OPERATOR`
+- `ADMIN`
+
+权限已经细化到如下粒度：
+
+- 草稿读取
+- 草稿调试读取
+- 草稿写入
+- 草稿统计读取
+- 提交审核
+- 审核决策
+- 发布差异读取
+- 发布执行
+- 回滚执行
+- 下线执行
+- 任务查看
+- 发布命令查看
+- 审计日志查看
+- 发布任务人工恢复
+- Outbox 人工恢复
+
+这意味着文档和联调时不应该只说“这个接口谁能调”，而是要知道“为什么能调”。
+
+## 四、接口分组
+
+### 1. 草稿接口
+
+#### `GET /drafts`
+
+用途：
+
+- 返回全量草稿明细
+- 包含正文大字段
+- 主要用于调试和管理员查看
+
+权限：
+
+- 角色：`ADMIN`
+- 权限：`DRAFT_DEBUG_READ`
+
+#### `GET /drafts/page`
+
+用途：
+
+- 列表页主接口
+- 返回分页摘要，不返回正文大字段
+
+权限：
+
+- `DRAFT_READ`
+
+支持的查询参数：
+
+- `keyword`
+- `status`
+- `searchInBody`
+- `pageNo`
+- `pageSize`
+- `sortBy`
+- `sortDirection`
+- `createdFrom`
+- `createdTo`
+- `updatedFrom`
+- `updatedTo`
+
 说明：
-- `success=true` 时，`data` 为业务返回。
-- `success=false` 时，`data=null`，并通过 HTTP 状态码表达错误类型（详见 `docs/ERROR_CODES.md`）。
 
-## 草稿（Draft）
+- `status` 支持多值
+- `sortBy` 支持 `ID`、`CREATED_AT`、`UPDATED_AT`
+- `sortDirection` 支持 `ASC`、`DESC`
+- `searchInBody=false` 时，更适合列表页
 
-列表页建议只使用“分页摘要”接口，避免拉取 `body` 大字段。
+#### `GET /drafts/{draftId}/summary`
 
-| Method | Path | 描述 |
-| --- | --- | --- |
-| GET | `/drafts/page` | 草稿分页查询（摘要，不含 body） |
-| GET | `/drafts/stats` | 草稿状态统计（Tab/Badge） |
-| GET | `/drafts/{draftId}/summary` | 单草稿工作流摘要（详情页信息卡） |
-| GET | `/drafts/{draftId}` | 草稿详情（含 body） |
-| GET | `/drafts` | 全量草稿列表（含 body，仅调试/演示） |
-| POST | `/drafts` | 创建草稿 |
-| PUT | `/drafts/{draftId}` | 更新草稿 |
+用途：
 
-### 草稿分页查询（列表页）
+- 返回单个草稿的工作流摘要
+- 适合详情页顶部概览区
 
-`GET /api/workflows/drafts/page`
+权限：
 
-查询参数（完整枚举见 `DraftQueryRequest`）：
-- `keyword`：模糊匹配 `bizNo/title/summary`；是否搜索 `body` 由 `searchInBody` 决定
-- `status`：可多选，例如 `status=DRAFT&status=APPROVED`
-- `searchInBody`：默认 `false`（列表页不建议开）
-- `pageNo`：从 1 开始
-- `pageSize`：建议 <= 100（接口允许到 200）
-- `sortBy`：`ID` / `CREATED_AT` / `UPDATED_AT`（默认 `UPDATED_AT`）
-- `sortDirection`：`ASC` / `DESC`（默认 `DESC`）
-- 时间范围：`createdFrom/createdTo/updatedFrom/updatedTo`，建议 ISO-8601，例如 `2026-04-14T12:00:00`
+- `DRAFT_READ`
 
-示例：
+#### `GET /drafts/stats`
 
-```http
-GET /api/workflows/drafts/page?pageNo=1&pageSize=20&keyword=release&status=DRAFT&sortBy=UPDATED_AT&sortDirection=DESC
-```
+用途：
 
-### 创建草稿
+- 返回草稿状态统计
+- 适合前端页签计数、状态徽标
 
-```http
-POST /api/workflows/drafts
-Content-Type: application/json
-```
+权限：
 
-```json
-{
-  "bizNo": "COURSE-20260414-0001",
-  "title": "Java 并发专题",
-  "summary": "面向企业内部培训的并发课程",
-  "body": "..."
-}
-```
+- `DRAFT_STATS_READ`
 
-## 审核（Review）
+#### `POST /drafts`
 
-| Method | Path | 描述 |
-| --- | --- | --- |
-| POST | `/drafts/{draftId}/submit-review` | 提交审核 |
-| POST | `/drafts/{draftId}/review` | 审核通过/驳回 |
-| GET | `/drafts/{draftId}/reviews` | 审核记录列表 |
+用途：
 
-## 发布（Publish）
+- 创建草稿
 
-| Method | Path | 描述 |
-| --- | --- | --- |
-| POST | `/drafts/{draftId}/publish` | 发起发布 |
-| POST | `/drafts/{draftId}/rollback` | 回滚到指定发布版本（基于快照生成新版本） |
-| POST | `/drafts/{draftId}/offline` | 下线 |
-| GET | `/drafts/{draftId}/snapshots` | 发布快照列表 |
-| GET | `/drafts/{draftId}/commands` | 幂等发布命令列表 |
-| GET | `/drafts/{draftId}/tasks` | 发布副作用任务列表 |
-| GET | `/drafts/{draftId}/logs` | 发布日志（审计） |
+权限：
 
-## HTTP 状态码约定（简版）
-
-- `200/201`：业务成功（`success=true`）
-- `400`：参数校验失败、业务入参不合法（`VALIDATION_ERROR` 等）
-- `404`：草稿/快照不存在（`DRAFT_NOT_FOUND` / `SNAPSHOT_NOT_FOUND`）
-- `409`：工作流状态冲突（`INVALID_WORKFLOW_STATE`）
-- `500`：未预期异常（`INTERNAL_ERROR`）
-
-## 请求头约定（建议）
-
-本服务可以部署在网关/Ingress 后面，建议通过请求头传递调用链与操作人信息，便于审计与排障：
-
-- `X-Request-Id`：请求唯一标识（网关生成或调用方生成）
-- `X-Operator`：操作人标识（例如用户名/工号；仅在管理端调用场景）
-- `X-Tenant-Id`：多租户场景租户标识（如需要）
+- `DRAFT_WRITE`
 
 说明：
-- 这些请求头是“建议约定”，不应替代正式鉴权系统；鉴权通常由网关或统一的 Auth 服务处理。
-- 如果你希望把操作人字段写入发布日志/审核记录，建议在后续实现中将 `X-Operator` 与服务侧日志/审计字段打通。
 
-## 幂等性建议（面向前端重复点击/重试）
+- 如果没有传 `bizNo`，服务层会生成默认业务号
+- 创建动作会写审计日志
 
-列表查询天然幂等；以下写接口建议考虑幂等（避免重复点击造成重复写入/重复任务）：
+#### `PUT /drafts/{draftId}`
 
-- 提交审核：`POST /drafts/{draftId}/submit-review`
-- 审核决策：`POST /drafts/{draftId}/review`
-- 发起发布：`POST /drafts/{draftId}/publish`
-- 回滚发布：`POST /drafts/{draftId}/rollback`
+用途：
 
-建议策略（不强依赖某一种实现）：
-- 前端禁用按钮 + 乐观提示（第一层防重复）
-- 服务端通过“状态机约束 + 唯一约束”保障安全（例如任务幂等键、快照唯一键）
-- 发布接口已支持 `Idempotency-Key` 请求头；也可通过请求体 `idempotencyKey` 字段传入
-- 相同草稿 + 相同幂等键的重复发布请求会复用同一条发布命令，不会重复生成快照和任务
+- 更新草稿
 
+权限：
 
+- `DRAFT_WRITE`
+
+说明：
+
+- 编辑会影响 `draftVersion`
+- 编辑是否允许，受当前工作流状态约束
+
+#### `GET /drafts/{draftId}`
+
+用途：
+
+- 返回草稿完整详情
+- 包含正文内容
+
+权限：
+
+- `DRAFT_READ`
+
+### 2. 审核接口
+
+#### `POST /drafts/{draftId}/submit-review`
+
+用途：
+
+- 把草稿从可编辑阶段推进到审核阶段
+
+权限：
+
+- `REVIEW_SUBMIT`
+
+#### `POST /drafts/{draftId}/review`
+
+用途：
+
+- 审核通过或驳回
+
+权限：
+
+- `REVIEW_DECIDE`
+
+请求体重点字段：
+
+- `decision`
+- `comment`
+
+说明：
+
+- `decision=APPROVE` 时进入 `APPROVED`
+- `decision=REJECT` 时进入 `REJECTED`
+- 驳回意见会写入草稿和审核记录
+
+#### `GET /drafts/{draftId}/reviews`
+
+用途：
+
+- 查看审核记录
+
+权限：
+
+- `DRAFT_READ`
+
+### 3. 发布与版本接口
+
+#### `POST /drafts/{draftId}/publish`
+
+用途：
+
+- 发起一次新的发布
+
+权限：
+
+- `PUBLISH_EXECUTE`
+
+主行为：
+
+- 校验状态和幂等
+- 生成快照
+- 创建发布任务
+- 生成发布命令
+- 记录日志
+- 进入 `PUBLISHING`
+
+说明：
+
+- 该接口成功返回不等于副作用已经全部完成
+- 最终状态由后台 worker 推进
+
+#### `POST /drafts/{draftId}/rollback`
+
+用途：
+
+- 基于历史快照回滚
+
+权限：
+
+- `ROLLBACK_EXECUTE`
+
+说明：
+
+- 回滚不是覆盖旧版本
+- 回滚会生成新的发布版本并复用发布编排链路
+
+#### `GET /drafts/{draftId}/publish-diff`
+
+用途：
+
+- 对比当前草稿与指定已发布版本的差异
+
+权限：
+
+- `PUBLISH_DIFF_READ`
+
+说明：
+
+- 不传 `basePublishedVersion` 时，通常以当前已发布版本为基准
+- 差异会影响后续任务生成范围
+
+#### `GET /drafts/{draftId}/snapshots`
+
+用途：
+
+- 查看历史发布快照
+
+权限：
+
+- `DRAFT_READ`
+
+#### `POST /drafts/{draftId}/offline`
+
+用途：
+
+- 将内容下线
+
+权限：
+
+- `OFFLINE_EXECUTE`
+
+### 4. 发布任务、命令与审计接口
+
+#### `GET /drafts/{draftId}/tasks`
+
+用途：
+
+- 查看该草稿关联的发布任务
+
+权限：
+
+- `TASK_VIEW`
+
+#### `GET /drafts/{draftId}/commands`
+
+用途：
+
+- 查看发布命令
+- 便于确认幂等发布是否复用了既有命令
+
+权限：
+
+- `COMMAND_VIEW`
+
+#### `GET /drafts/{draftId}/logs`
+
+用途：
+
+- 查看该草稿下的结构化审计日志
+
+权限：
+
+- `LOG_VIEW`
+
+#### `GET /drafts/{draftId}/logs/timeline`
+
+用途：
+
+- 按 `traceId` 拉取一条链路的时间线
+
+权限：
+
+- `LOG_VIEW`
+
+#### `GET /drafts/{draftId}/logs/publish-timeline`
+
+用途：
+
+- 按 `publishedVersion` 聚合一条发布过程
+
+权限：
+
+- `LOG_VIEW`
+
+说明：
+
+- 更适合做前端发布时间线视图
+- 比原始日志列表更接近业务视角
+
+### 5. 恢复接口
+
+#### `GET /drafts/{draftId}/recovery/tasks`
+
+用途：
+
+- 查看该草稿下可恢复的发布任务
+
+权限：
+
+- `TASK_VIEW`
+
+支持状态过滤：
+
+- `FAILED`
+- `DEAD`
+
+#### `POST /drafts/{draftId}/tasks/{taskId}/manual-retry`
+
+用途：
+
+- 手动重试单个失败任务
+
+权限：
+
+- `TASK_MANUAL_REQUEUE`
+
+说明：
+
+- 只允许恢复当前 `publishedVersion` 对应的任务
+- 恢复后任务会回到 `PENDING`
+
+#### `POST /drafts/{draftId}/tasks/manual-retry-current-version`
+
+用途：
+
+- 批量恢复当前发布版本的所有失败任务
+
+权限：
+
+- `TASK_MANUAL_REQUEUE`
+
+#### `POST /drafts/{draftId}/tasks/{taskId}/manual-requeue`
+
+用途：
+
+- 兼容旧命名的任务重入队接口
+
+权限：
+
+- `TASK_MANUAL_REQUEUE`
+
+#### `GET /outbox/events/recovery`
+
+用途：
+
+- 查看失败或死信的 outbox 事件
+
+权限：
+
+- 角色：`ADMIN`
+- 权限：`OUTBOX_MANUAL_REQUEUE`
+
+支持参数：
+
+- `draftId`
+- `status`
+- `limit`
+
+#### `POST /outbox/events/{outboxEventId}/manual-retry`
+
+用途：
+
+- 手动恢复单个 outbox 事件
+
+权限：
+
+- `ADMIN + OUTBOX_MANUAL_REQUEUE`
+
+#### `POST /outbox/events/{outboxEventId}/manual-requeue`
+
+用途：
+
+- 兼容旧命名的 outbox 重入队接口
+
+权限：
+
+- `ADMIN + OUTBOX_MANUAL_REQUEUE`
+
+## 五、典型调用顺序
+
+### 1. 正常发布顺序
+
+1. `POST /drafts`
+2. `PUT /drafts/{draftId}`
+3. `POST /drafts/{draftId}/submit-review`
+4. `POST /drafts/{draftId}/review`
+5. `GET /drafts/{draftId}/publish-diff`
+6. `POST /drafts/{draftId}/publish`
+7. `GET /drafts/{draftId}/tasks`
+8. `GET /drafts/{draftId}/logs/publish-timeline`
+
+### 2. 发布失败后的恢复顺序
+
+1. `GET /drafts/{draftId}/recovery/tasks`
+2. `POST /drafts/{draftId}/tasks/{taskId}/manual-retry`
+3. 或 `POST /drafts/{draftId}/tasks/manual-retry-current-version`
+4. 再次查看 `GET /drafts/{draftId}/logs/publish-timeline`
+
+### 3. Outbox 恢复顺序
+
+1. `GET /outbox/events/recovery`
+2. `POST /outbox/events/{outboxEventId}/manual-retry`
+
+## 六、联调建议
+
+- 列表页只调 `/drafts/page`，不要用 `/drafts`
+- 草稿页顶部优先调 `/drafts/{draftId}/summary`
+- 状态统计页签优先调 `/drafts/stats`
+- 发布后不要只看接口返回，要继续看任务和时间线接口
+- 恢复接口属于运维能力，不建议给普通编辑角色开放

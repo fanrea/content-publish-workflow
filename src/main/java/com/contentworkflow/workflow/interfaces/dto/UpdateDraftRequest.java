@@ -1,6 +1,7 @@
 package com.contentworkflow.workflow.interfaces.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -8,8 +9,12 @@ import jakarta.validation.constraints.Size;
  */
 
 public record UpdateDraftRequest(
+        @NotNull Long expectedVersion,
         @NotBlank @Size(max = 255) String title,
         @NotBlank @Size(max = 500) String summary,
         @NotBlank String body
 ) {
+    public UpdateDraftRequest(String title, String summary, String body) {
+        this(null, title, summary, body);
+    }
 }

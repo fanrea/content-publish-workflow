@@ -6,9 +6,14 @@ import com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDra
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.cache.annotation.Caching;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
+import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -84,6 +89,48 @@ public interface ContentDraftJpaRepository extends JpaRepository<ContentDraftJpa
             @CacheEvict(cacheNames = CacheNames.DRAFT_STATUS_COUNT, allEntries = true)
     })
     <S extends ContentDraftJpaEntity> S save(S entity);
+
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Caching(evict = {
+            @CacheEvict(cacheNames = CacheNames.DRAFT_DETAIL_BY_ID,
+                    key = "T(com.contentworkflow.common.cache.CacheKeys).draftId(#p0)",
+                    condition = "#p0 != null"),
+            @CacheEvict(cacheNames = CacheNames.DRAFT_DETAIL_BY_BIZ_NO,
+                    key = "T(com.contentworkflow.common.cache.CacheKeys).draftBizNo(#p3)",
+                    condition = "#p3 != null && !#p3.isBlank()"),
+            @CacheEvict(cacheNames = CacheNames.DRAFT_LIST_LATEST, allEntries = true),
+            @CacheEvict(cacheNames = CacheNames.DRAFT_STATUS_COUNT, allEntries = true)
+    })
+    @Query("""
+            update ContentDraftJpaEntity draft
+               set draft.title = :title,
+                   draft.summary = :summary,
+                   draft.body = :body,
+                   draft.draftVersion = :draftVersion,
+                   draft.publishedVersion = :publishedVersion,
+                   draft.workflowStatus = :workflowStatus,
+                   draft.currentSnapshotId = :currentSnapshotId,
+                   draft.lastReviewComment = :lastReviewComment,
+                   draft.updatedAt = :updatedAt,
+                   draft.version = draft.version + 1
+             where draft.id = :id
+               and draft.version = :expectedVersion
+               and draft.bizNo = :bizNo
+               and draft.workflowStatus in :expectedStatuses
+            """)
+    int conditionalUpdate(@Param("id") Long id,
+                          @Param("expectedVersion") Long expectedVersion,
+                          @Param("expectedStatuses") Collection<WorkflowStatus> expectedStatuses,
+                          @Param("bizNo") String bizNo,
+                          @Param("title") String title,
+                          @Param("summary") String summary,
+                          @Param("body") String body,
+                          @Param("draftVersion") Integer draftVersion,
+                          @Param("publishedVersion") Integer publishedVersion,
+                          @Param("workflowStatus") WorkflowStatus workflowStatus,
+                          @Param("currentSnapshotId") Long currentSnapshotId,
+                          @Param("lastReviewComment") String lastReviewComment,
+                          @Param("updatedAt") LocalDateTime updatedAt);
 
     /**
      * 删除指定业务对象，并同步清理相关状态。

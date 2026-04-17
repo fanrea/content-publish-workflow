@@ -1,14 +1,43 @@
-﻿# Observability（Actuator / Prometheus / Logging）
+# 可观测性说明
 
-本项目提供可直接展示给面试官的基础运维资产：
-- Actuator 健康检查与指标暴露（Prometheus）
-- `ops` / `loadtest` profile 的运行配置样例
-- Prometheus scrape 配置样例与 Grafana dashboard 模板
-- 统一日志格式（logback）
+项目已经具备一套适合本地演示、压测观察和基本排障的可观测性能力。虽然它还不是完整生产级监控平台，但骨架已经齐全。
 
-## 一键开启（推荐）
+## 一、当前已接入能力
 
-建议把 actuator 放到独立端口，避免业务端口暴露过多运维信息：
+- Spring Boot Actuator
+- Micrometer
+- Prometheus 指标暴露
+- Logback 日志配置
+- 可选独立管理端口
+- Grafana 面板模板
+
+## 二、默认可用端点
+
+默认可用的 Actuator 端点：
+
+- `/actuator/health`
+- `/actuator/health/liveness`
+- `/actuator/health/readiness`
+- `/actuator/metrics`
+- `/actuator/prometheus`
+
+## 三、`ops` profile 打开后会增加什么
+
+启用 `ops` profile 后，系统会进一步暴露：
+
+- `loggers`
+- `env`
+- `configprops`
+- `threaddump`
+- `httpexchanges`
+
+同时建议通过：
+
+- `MANAGEMENT_PORT`
+
+把管理端口与业务端口拆开。
+
+## 四、推荐启动方式
 
 ```bash
 SPRING_PROFILES_ACTIVE=ops,mysql,redis
@@ -16,60 +45,120 @@ SERVER_PORT=8080
 MANAGEMENT_PORT=8081
 ```
 
-业务端口：
-- `http://127.0.0.1:8080`
+这样通常会形成：
 
-运维端口：
-- `http://127.0.0.1:8081/actuator/health/readiness`
-- `http://127.0.0.1:8081/actuator/prometheus`
+- 业务端口：`8080`
+- 管理端口：`8081`
 
-安全提示：
-- `ops` profile 会额外暴露 `env/configprops/loggers` 等端点
-- 仅建议在内网、或网关鉴权后开放
+## 五、readiness 与 liveness 的意义
 
-## Actuator 端点清单
+### 1. liveness
 
-默认（`application.yml`）：
-- `GET /actuator/health`
-- `GET /actuator/health/liveness`
-- `GET /actuator/health/readiness`
-- `GET /actuator/metrics`
-- `GET /actuator/prometheus`
+用于回答：
 
-`ops`（`application-ops.yml`）：
-- 额外暴露：`loggers/env/configprops/threaddump/httpexchanges`
+“进程还活着吗？”
 
-## Prometheus
+### 2. readiness
 
-使用 `docs/observability/prometheus.yml` 作为样例：
-- scrape `MANAGEMENT_PORT` 上的 `/actuator/prometheus`
-- 建议按环境设置 `job_name` 与 `labels`
+用于回答：
 
-指标里你最常看的几个维度：
-- HTTP 延迟：`http_server_requests_seconds_*`
-- JVM 内存：`jvm_memory_used_bytes`
-- GC：`jvm_gc_pause_seconds_*`
-- Tomcat 线程：`tomcat_threads_*`
-- 连接：`tomcat_connections_*`
+“服务现在可以接流量吗？”
 
-## Grafana Dashboard
+默认 readiness 检查：
 
-仓库提供了一个最小 dashboard 模板：
+- `ping`
+- `db`
+
+启用 `redis` 后还会检查：
+
+- `redis`
+
+## 六、Prometheus 指标说明
+
+项目已经暴露标准 Prometheus 指标，常用观察维度包括：
+
+### 1. HTTP 请求
+
+- 请求总量
+- 延迟
+- 分位数
+- 错误率
+
+### 2. JVM
+
+- 堆内存
+- 非堆内存
+- GC 暂停
+- 线程
+
+### 3. Tomcat
+
+- 当前线程数
+- 最大线程数
+- 连接数
+
+## 七、Grafana 资产
+
+仓库内已有现成资产：
+
+- `docs/observability/prometheus.yml`
 - `docs/observability/grafana-dashboard.json`
 
-导入方式：
-1. 在 Grafana 添加 Prometheus datasource
-2. Import dashboard JSON
-3. 选择对应 datasource
+可以直接用于：
 
-## Logging（logback）
+- 本地 Prometheus 抓取
+- 导入 Grafana 面板
 
-日志格式配置在：
+## 八、日志定位
+
+当前日志配置文件位于：
+
 - `src/main/resources/logback-spring.xml`
 
-特点：
-- 单行、可 grep、可直接贴到简历/面试材料
-- 如果上游引入 tracing/request-id，日志会自动带上 `traceId/spanId/requestId`（没有则显示 `-`）
+日志主要用于配合：
 
+- `traceId`
+- `requestId`
+- 审计日志
 
+一起完成排障。
 
+建议排问题时不要只看控制台文本日志，也要同时查：
+
+- 发布日志接口
+- outbox 状态
+- 任务表状态
+
+## 九、适合监控的业务场景
+
+### 1. 发布慢
+
+重点看：
+
+- 发布接口延迟
+- 任务执行耗时
+- 数据库延迟
+
+### 2. 发布卡住
+
+重点看：
+
+- `PUBLISHING` 状态持续时间
+- 是否有任务卡在 `RUNNING`
+- outbox 是否卡在 `FAILED` 或 `DEAD`
+
+### 3. 恢复频繁
+
+重点看：
+
+- 失败任务数量
+- 死信 outbox 数量
+- 哪类任务最容易失败
+
+## 十、后续可继续增强的方向
+
+- 增加业务自定义指标
+- 增加任务失败率与恢复次数指标
+- 增加 outbox 堆积指标
+- 增加缓存命中率指标
+- 对接真正的链路追踪系统

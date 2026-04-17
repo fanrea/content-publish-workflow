@@ -60,7 +60,7 @@ class ContentWorkflowStateMachineTest {
         assertCode(ex, "INVALID_WORKFLOW_STATE");
 
         BusinessException editEx = assertThrows(BusinessException.class,
-                () -> service.updateDraft(draft.id(), new UpdateDraftRequest("t2", "s2", "b2")));
+                () -> service.updateDraft(draft.id(), new UpdateDraftRequest(reviewing.version(), "t2", "s2", "b2")));
         assertCode(editEx, "INVALID_WORKFLOW_STATE");
     }
 
@@ -107,7 +107,7 @@ class ContentWorkflowStateMachineTest {
         assertEquals(WorkflowStatus.REJECTED, rejected.status());
         assertEquals("bad title", rejected.lastReviewComment());
 
-        ContentDraftResponse edited = service.updateDraft(draft.id(), new UpdateDraftRequest("t2", "s2", "b2"));
+        ContentDraftResponse edited = service.updateDraft(draft.id(), new UpdateDraftRequest(rejected.version(), "t2", "s2", "b2"));
         assertEquals(WorkflowStatus.DRAFT, edited.status());
         assertNull(edited.lastReviewComment());
         assertEquals(rejected.draftVersion() + 1, edited.draftVersion());
@@ -135,6 +135,7 @@ class ContentWorkflowStateMachineTest {
         persisted.setStatus(WorkflowStatus.PUBLISHED);
         persisted.setUpdatedAt(LocalDateTime.now());
         store.updateDraft(persisted);
+        store.releaseDraftOperationLock(draft.id(), 1);
 
         BusinessException noSnapshot = assertThrows(BusinessException.class,
                 () -> service.rollback(draft.id(), new RollbackRequest("op", 999, "rollback")));

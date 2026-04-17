@@ -1,9 +1,12 @@
 package com.contentworkflow.common.messaging;
 
 import com.contentworkflow.workflow.application.store.InMemoryWorkflowStore;
-import com.contentworkflow.workflow.application.store.WorkflowStore;
 import com.contentworkflow.workflow.application.task.PublishTaskEventFactory;
+import com.contentworkflow.workflow.application.task.PublishTaskProgressService;
 import com.contentworkflow.workflow.domain.entity.ContentDraft;
+import com.contentworkflow.workflow.domain.entity.PublishTask;
+import com.contentworkflow.workflow.domain.enums.PublishTaskStatus;
+import com.contentworkflow.workflow.domain.enums.PublishTaskType;
 import com.contentworkflow.workflow.domain.enums.WorkflowStatus;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -17,35 +20,30 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/**
- * 测试类，用于验证当前模块在特定场景下的行为、状态变化或边界条件。
- */
-
 class WorkflowSideEffectEventLoggingListenerTest {
 
-    private WorkflowStore store;
+    private InMemoryWorkflowStore store;
     private AtomicInteger readModelGatewayCalls;
     private WorkflowSideEffectEventLoggingListener listener;
     private ObjectMapper objectMapper;
-
-    /**
-     * 执行测试前的初始化逻辑，为后续测试用例准备运行环境。
-     */
+    private Long seededTaskId;
 
     @BeforeEach
     void setUp() {
         store = new InMemoryWorkflowStore();
-        seedDraft();
+        seedDraftAndTask();
         objectMapper = new ObjectMapper().findAndRegisterModules();
 
         readModelGatewayCalls = new AtomicInteger();
+        PublishTaskProgressService progressService = new PublishTaskProgressService(store, event -> {
+        });
         WorkflowSideEffectConsumerService consumerService = new WorkflowSideEffectConsumerService(
-                store,
                 payload -> {
                 },
                 payload -> readModelGatewayCalls.incrementAndGet(),
                 payload -> {
-                }
+                },
+                progressService
         );
 
         listener = new WorkflowSideEffectEventLoggingListener(
@@ -55,15 +53,11 @@ class WorkflowSideEffectEventLoggingListenerTest {
         );
     }
 
-    /**
-     * 处理 duplicate_message_should_only_be_consumed_once 相关逻辑，并返回对应的执行结果。
-     */
-
     @Test
     void duplicate_message_should_only_be_consumed_once() throws Exception {
         PublishTaskEventFactory.ReadModelSyncRequestedPayload payload =
                 new PublishTaskEventFactory.ReadModelSyncRequestedPayload(
-                        11L,
+                        seededTaskId,
                         1L,
                         "CPW-1",
                         21L,
@@ -82,29 +76,39 @@ class WorkflowSideEffectEventLoggingListenerTest {
         listener.onReadModelSyncRequested(json, "msg-1", "DOWNSTREAM_READ_MODEL_SYNC_REQUESTED", Map.of());
 
         assertEquals(1, readModelGatewayCalls.get());
-        long acceptedLogs = store.listPublishLogs(1L).stream()
-                .filter(log -> "MQ_READ_MODEL_ACCEPTED".equals(log.getActionType()))
+        long confirmedLogs = store.listPublishLogs(1L).stream()
+                .filter(log -> "MQ_READ_MODEL_CONFIRMED".equals(log.getActionType()))
                 .count();
-        assertEquals(1L, acceptedLogs);
+        assertEquals(1L, confirmedLogs);
+
+        PublishTask task = store.listPublishTasks(1L).stream().findFirst().orElseThrow();
+        assertEquals(PublishTaskStatus.SUCCESS, task.getStatus());
+        assertEquals(WorkflowStatus.PUBLISHED, store.findDraftById(1L).orElseThrow().getStatus());
     }
 
-    /**
-     * 处理 seed draft 相关逻辑，并返回对应的执行结果。
-     */
-
-    private void seedDraft() {
+    private void seedDraftAndTask() {
         ContentDraft draft = ContentDraft.builder()
-                .id(1L)
                 .bizNo("CPW-1")
                 .title("title")
                 .summary("summary")
                 .body("body")
-                .draftVersion(1)
-                .publishedVersion(1)
-                .status(WorkflowStatus.PUBLISHED)
+                .draftVersion(3)
+                .publishedVersion(2)
+                .status(WorkflowStatus.PUBLISHING)
                 .createdAt(LocalDateTime.now())
                 .updatedAt(LocalDateTime.now())
                 .build();
-        store.insertDraft(draft);
+        draft = store.insertDraft(draft);
+
+        PublishTask task = PublishTask.builder()
+                .draftId(draft.getId())
+                .publishedVersion(2)
+                .taskType(PublishTaskType.SYNC_DOWNSTREAM_READ_MODEL)
+                .status(PublishTaskStatus.AWAITING_CONFIRMATION)
+                .retryTimes(0)
+                .createdAt(LocalDateTime.now())
+                .updatedAt(LocalDateTime.now())
+                .build();
+        seededTaskId = store.insertPublishTasks(List.of(task)).get(0).getId();
     }
 }

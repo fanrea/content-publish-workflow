@@ -84,9 +84,10 @@ class PublishIdempotencyAndDiffTest {
         persisted.setStatus(WorkflowStatus.PUBLISHED);
         persisted.setUpdatedAt(LocalDateTime.now());
         store.updateDraft(persisted);
+        store.releaseDraftOperationLock(draft.id(), 1);
 
         service.offline(draft.id(), new OfflineRequest("op", "offline for next edit"));
-        service.updateDraft(draft.id(), new UpdateDraftRequest("t2", "s", "b"));
+        service.updateDraft(draft.id(), new UpdateDraftRequest(service.getDraft(draft.id()).version(), "t2", "s", "b"));
 
         PublishDiffResponse diff = service.getPublishDiff(draft.id(), null);
         assertNotNull(diff);
@@ -115,9 +116,10 @@ class PublishIdempotencyAndDiffTest {
         persisted.setStatus(WorkflowStatus.PUBLISHED);
         persisted.setUpdatedAt(LocalDateTime.now());
         store.updateDraft(persisted);
+        store.releaseDraftOperationLock(draft.id(), 1);
 
         service.offline(draft.id(), new OfflineRequest("op", "edit next version"));
-        service.updateDraft(draft.id(), new UpdateDraftRequest("t", "s", "body-v2"));
+        service.updateDraft(draft.id(), new UpdateDraftRequest(service.getDraft(draft.id()).version(), "t", "s", "body-v2"));
         service.submitReview(draft.id(), new SubmitReviewRequest("editor", "ready again"));
         service.review(draft.id(), new ReviewDecisionRequest("reviewer", ReviewDecision.APPROVE, "ok"));
 
@@ -152,9 +154,10 @@ class PublishIdempotencyAndDiffTest {
         persisted.setStatus(WorkflowStatus.PUBLISHED);
         persisted.setUpdatedAt(LocalDateTime.now());
         store.updateDraft(persisted);
+        store.releaseDraftOperationLock(draft.id(), 1);
 
         service.offline(draft.id(), new OfflineRequest("op", "edit next version"));
-        service.updateDraft(draft.id(), new UpdateDraftRequest("t", "s", "body-v1"));
+        service.updateDraft(draft.id(), new UpdateDraftRequest(service.getDraft(draft.id()).version(), "t", "s", "body-v1"));
         service.submitReview(draft.id(), new SubmitReviewRequest("editor", "ready again"));
         service.review(draft.id(), new ReviewDecisionRequest("reviewer", ReviewDecision.APPROVE, "ok"));
 
@@ -179,9 +182,10 @@ class PublishIdempotencyAndDiffTest {
         persisted.setStatus(WorkflowStatus.PUBLISHED);
         persisted.setUpdatedAt(LocalDateTime.now());
         store.updateDraft(persisted);
+        store.releaseDraftOperationLock(draft.id(), 1);
 
         service.offline(draft.id(), new OfflineRequest("op", "edit next version"));
-        service.updateDraft(draft.id(), new UpdateDraftRequest("t2", "s", "b"));
+        service.updateDraft(draft.id(), new UpdateDraftRequest(service.getDraft(draft.id()).version(), "t2", "s", "b"));
         service.submitReview(draft.id(), new SubmitReviewRequest("editor", "ready again"));
         service.review(draft.id(), new ReviewDecisionRequest("reviewer", ReviewDecision.APPROVE, "ok"));
 
@@ -206,10 +210,11 @@ class PublishIdempotencyAndDiffTest {
         persisted.setStatus(WorkflowStatus.PUBLISHED);
         persisted.setUpdatedAt(LocalDateTime.now());
         store.updateDraft(persisted);
+        store.releaseDraftOperationLock(draft.id(), 1);
 
         service.offline(draft.id(), new OfflineRequest("op", "format tweak"));
         // Only whitespace changes compared to v1.
-        service.updateDraft(draft.id(), new UpdateDraftRequest("t", "s", "body-v1  "));
+        service.updateDraft(draft.id(), new UpdateDraftRequest(service.getDraft(draft.id()).version(), "t", "s", "body-v1  "));
         service.submitReview(draft.id(), new SubmitReviewRequest("editor", "ready again"));
         service.review(draft.id(), new ReviewDecisionRequest("reviewer", ReviewDecision.APPROVE, "ok"));
 
@@ -240,9 +245,10 @@ class PublishIdempotencyAndDiffTest {
         persisted.setStatus(WorkflowStatus.PUBLISHED);
         persisted.setUpdatedAt(LocalDateTime.now());
         store.updateDraft(persisted);
+        store.releaseDraftOperationLock(draft.id(), 1);
 
         service.offline(draft.id(), new OfflineRequest("op", "edit title"));
-        service.updateDraft(draft.id(), new UpdateDraftRequest("t-new", "s", "body-v1"));
+        service.updateDraft(draft.id(), new UpdateDraftRequest(service.getDraft(draft.id()).version(), "t-new", "s", "body-v1"));
         service.submitReview(draft.id(), new SubmitReviewRequest("editor", "ready again"));
         service.review(draft.id(), new ReviewDecisionRequest("reviewer", ReviewDecision.APPROVE, "ok"));
 

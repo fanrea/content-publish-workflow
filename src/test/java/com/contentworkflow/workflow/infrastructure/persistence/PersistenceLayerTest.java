@@ -1,5 +1,9 @@
 package com.contentworkflow.workflow.infrastructure.persistence;
 
+import com.contentworkflow.common.exception.BusinessException;
+import com.contentworkflow.workflow.application.store.DraftOperationLockEntry;
+import com.contentworkflow.workflow.application.store.JpaWorkflowStore;
+import com.contentworkflow.workflow.domain.enums.DraftOperationType;
 import com.contentworkflow.workflow.domain.enums.PublishTaskStatus;
 import com.contentworkflow.workflow.domain.enums.PublishTaskType;
 import com.contentworkflow.workflow.domain.enums.ReviewDecision;
@@ -11,8 +15,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.EnumSet;
 
+import static com.contentworkflow.testing.BusinessExceptionAssertions.assertCode;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * 测试类，用于验证当前模块在特定场景下的行为、状态变化或边界条件。
@@ -38,6 +46,12 @@ class PersistenceLayerTest {
 
     @Autowired
     private PublishCommandJpaRepository commandRepo;
+
+    @Autowired
+    private DraftOperationLockJpaRepository operationLockRepo;
+
+    @Autowired
+    private jakarta.persistence.EntityManager entityManager;
 
     /**
      * 处理 repositories_can persist and query 相关逻辑，并返回对应的执行结果。
@@ -123,5 +137,143 @@ class PersistenceLayerTest {
         log = logRepo.saveAndFlush(log);
         assertThat(log.getId()).isNotNull();
         assertThat(logRepo.findByDraftIdOrderByCreatedAtDesc(draft.getId())).isNotEmpty();
+    }
+
+    @Test
+    void workflowStore_shouldRejectStaleDraftVersion() {
+        JpaWorkflowStore store = new JpaWorkflowStore(
+                draftRepo,
+                reviewRepo,
+                snapshotRepo,
+                taskRepo,
+                logRepo,
+                commandRepo,
+                operationLockRepo,
+                entityManager
+        );
+
+        ContentDraftJpaEntity draft = new ContentDraftJpaEntity();
+        draft.setBizNo("BIZ-CONCURRENT-001");
+        draft.setTitle("t1");
+        draft.setSummary("s1");
+        draft.setBody("b1");
+        draft.setDraftVersion(1);
+        draft.setPublishedVersion(0);
+        draft.setWorkflowStatus(WorkflowStatus.DRAFT);
+        draft.setCreatedAt(LocalDateTime.now());
+        draft.setUpdatedAt(LocalDateTime.now());
+        draft = draftRepo.saveAndFlush(draft);
+
+        com.contentworkflow.workflow.domain.entity.ContentDraft stale = store.findDraftById(draft.getId()).orElseThrow();
+
+        draft.setTitle("t2");
+        draft.setUpdatedAt(LocalDateTime.now());
+        draftRepo.saveAndFlush(draft);
+
+        stale.setTitle("t3");
+        stale.setUpdatedAt(LocalDateTime.now());
+        BusinessException ex = assertThrows(BusinessException.class, () -> store.updateDraft(stale));
+        assertCode(ex, "CONCURRENT_MODIFICATION");
+    }
+
+    @Test
+    void workflowStore_shouldRejectUnexpectedDraftStateForConditionalUpdate() {
+        JpaWorkflowStore store = new JpaWorkflowStore(
+                draftRepo,
+                reviewRepo,
+                snapshotRepo,
+                taskRepo,
+                logRepo,
+                commandRepo,
+                operationLockRepo,
+                entityManager
+        );
+
+        ContentDraftJpaEntity draft = new ContentDraftJpaEntity();
+        draft.setBizNo("BIZ-STATE-001");
+        draft.setTitle("t1");
+        draft.setSummary("s1");
+        draft.setBody("b1");
+        draft.setDraftVersion(1);
+        draft.setPublishedVersion(0);
+        draft.setWorkflowStatus(WorkflowStatus.DRAFT);
+        draft.setCreatedAt(LocalDateTime.now());
+        draft.setUpdatedAt(LocalDateTime.now());
+        draft = draftRepo.saveAndFlush(draft);
+
+        int transitioned = draftRepo.conditionalUpdate(
+                draft.getId(),
+                draft.getVersion(),
+                EnumSet.of(WorkflowStatus.DRAFT),
+                draft.getBizNo(),
+                draft.getTitle(),
+                draft.getSummary(),
+                draft.getBody(),
+                draft.getDraftVersion(),
+                draft.getPublishedVersion(),
+                WorkflowStatus.REVIEWING,
+                draft.getCurrentSnapshotId(),
+                draft.getLastReviewComment(),
+                LocalDateTime.now()
+        );
+        assertThat(transitioned).isEqualTo(1);
+
+        com.contentworkflow.workflow.domain.entity.ContentDraft reviewing = store.findDraftById(draft.getId()).orElseThrow();
+        reviewing.setTitle("t2");
+        reviewing.setUpdatedAt(LocalDateTime.now());
+
+        BusinessException ex = assertThrows(
+                BusinessException.class,
+                () -> store.updateDraft(reviewing, EnumSet.of(WorkflowStatus.DRAFT))
+        );
+        assertCode(ex, "INVALID_WORKFLOW_STATE");
+    }
+
+    @Test
+    void workflowStore_shouldAcquireAndReleaseDraftOperationLock() {
+        JpaWorkflowStore store = new JpaWorkflowStore(
+                draftRepo,
+                reviewRepo,
+                snapshotRepo,
+                taskRepo,
+                logRepo,
+                commandRepo,
+                operationLockRepo,
+                entityManager
+        );
+
+        ContentDraftJpaEntity draft = new ContentDraftJpaEntity();
+        draft.setBizNo("BIZ-LOCK-001");
+        draft.setTitle("t1");
+        draft.setSummary("s1");
+        draft.setBody("b1");
+        draft.setDraftVersion(1);
+        draft.setPublishedVersion(0);
+        draft.setWorkflowStatus(WorkflowStatus.DRAFT);
+        draft.setCreatedAt(LocalDateTime.now());
+        draft.setUpdatedAt(LocalDateTime.now());
+        draft = draftRepo.saveAndFlush(draft);
+
+        LocalDateTime now = LocalDateTime.now();
+        DraftOperationLockEntry lock = DraftOperationLockEntry.builder()
+                .draftId(draft.getId())
+                .operationType(DraftOperationType.PUBLISH)
+                .targetPublishedVersion(1)
+                .lockedBy("test")
+                .lockedAt(now)
+                .expiresAt(now.plusMinutes(10))
+                .build();
+
+        assertThat(store.tryAcquireDraftOperationLock(lock, now)).isTrue();
+        assertThat(store.findDraftOperationLock(draft.getId())).isPresent();
+        LocalDateTime renewedAt = now.plusMinutes(1);
+        LocalDateTime renewedExpiresAt = renewedAt.plusMinutes(10);
+        assertThat(store.renewDraftOperationLock(draft.getId(), 1, "worker-1", renewedAt, renewedExpiresAt)).isTrue();
+        DraftOperationLockEntry renewed = store.findDraftOperationLock(draft.getId()).orElseThrow();
+        assertThat(renewed.getLockedBy()).isEqualTo("worker-1");
+        assertThat(renewed.getLockedAt()).isEqualTo(renewedAt.truncatedTo(ChronoUnit.MICROS));
+        assertThat(renewed.getExpiresAt()).isEqualTo(renewedExpiresAt.truncatedTo(ChronoUnit.MICROS));
+        assertThat(store.releaseDraftOperationLock(draft.getId(), 1)).isTrue();
+        assertThat(store.findDraftOperationLock(draft.getId())).isEmpty();
     }
 }

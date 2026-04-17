@@ -1,20 +1,85 @@
-# Roadmap
+# 后续演进路线
 
-## Phase 1
-- single-service backend skeleton
-- state machine enforcement
-- review and publish APIs
-- snapshot and rollback model
-- in-memory implementation for workflow demo
+当前项目的主链路已经比较完整，后续重点不是继续堆接口，而是把工程能力进一步做深。
 
-## Phase 2
-- MySQL persistence
-- MyBatis-Plus mappers
-- publish log persistence
-- review history queries from database
+## 一、优先级最高的方向
 
-## Phase 3
-- RabbitMQ publish task dispatch
-- async worker for side effects
-- retry and compensation
-- idempotent publish command
+### 1. 引入正式数据库迁移工具
+
+建议优先引入 Flyway。
+
+原因：
+
+- MySQL 模式已经不适合只靠手工执行 schema
+- 表结构演进需要可追踪
+
+### 2. 增强权限模型
+
+当前权限模型适合演示和联调，但还不是完整 RBAC。
+
+后续可扩展：
+
+- 用户体系
+- 角色绑定
+- 资源级权限
+- 恢复操作审批
+
+### 3. 增强业务监控指标
+
+例如增加：
+
+- 任务失败率
+- 恢复次数
+- outbox 堆积量
+- 发布时间分布
+
+## 二、中期方向
+
+### 1. 对接真实外部系统
+
+包括：
+
+- 搜索索引服务
+- 读模型服务
+- 通知服务
+
+### 2. 增强恢复与补偿
+
+包括：
+
+- 更细粒度恢复策略
+- 自动补偿任务
+- 恢复操作审批链
+
+### 3. 增强测试体系
+
+包括：
+
+- MySQL 集成测试
+- Redis 集成测试
+- MQ 集成测试
+- 压测结果沉淀
+
+## 三、长期方向
+
+### 1. 多实例部署下的更完整一致性设计
+
+### 2. 更细粒度的业务事件模型
+
+### 3. 与真实平台治理体系集成
+
+例如：
+
+- 配置中心
+- 注册中心
+- 链路追踪
+- 告警平台
+
+## 四、建议的实施顺序
+
+1. Flyway
+2. 指标补齐
+3. 权限模型增强
+4. 真实下游接入
+5. 恢复和补偿增强
+6. 更完整的集成测试和压测沉淀

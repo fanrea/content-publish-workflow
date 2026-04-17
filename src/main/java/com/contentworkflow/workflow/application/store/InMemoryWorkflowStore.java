@@ -35,6 +35,7 @@ public class InMemoryWorkflowStore implements WorkflowStore {
     private final Map<Long, List<PublishTask>> tasks = new ConcurrentHashMap<>();
     private final Map<Long, List<PublishLogEntry>> logs = new ConcurrentHashMap<>();
     private final Map<String, PublishCommandEntry> publishCommands = new ConcurrentHashMap<>();
+    private final Map<Long, DraftOperationLockEntry> operationLocks = new ConcurrentHashMap<>();
 
     private final AtomicLong draftIdGenerator = new AtomicLong(1);
     private final AtomicLong reviewIdGenerator = new AtomicLong(1);
@@ -52,6 +53,7 @@ public class InMemoryWorkflowStore implements WorkflowStore {
     @Override
     public List<ContentDraft> listDrafts() {
         return drafts.values().stream()
+                .map(this::copyDraft)
                 .sorted((left, right) -> right.getUpdatedAt().compareTo(left.getUpdatedAt()))
                 .toList();
     }
@@ -107,12 +109,14 @@ public class InMemoryWorkflowStore implements WorkflowStore {
     @Override
     public ContentDraft insertDraft(ContentDraft draft) {
         long id = draftIdGenerator.getAndIncrement();
-        draft.setId(id);
-        if (draft.getBizNo() == null || draft.getBizNo().isBlank()) {
-            draft.setBizNo("CPW-" + id);
+        ContentDraft stored = copyDraft(draft);
+        stored.setId(id);
+        stored.setVersion(0L);
+        if (stored.getBizNo() == null || stored.getBizNo().isBlank()) {
+            stored.setBizNo("CPW-" + id);
         }
-        drafts.put(id, draft);
-        return draft;
+        drafts.put(id, stored);
+        return copyDraft(stored);
     }
 
     /**
@@ -124,7 +128,68 @@ public class InMemoryWorkflowStore implements WorkflowStore {
 
     @Override
     public Optional<ContentDraft> findDraftById(Long draftId) {
-        return Optional.ofNullable(drafts.get(draftId));
+        return Optional.ofNullable(copyDraft(drafts.get(draftId)));
+    }
+
+    @Override
+    public Optional<DraftOperationLockEntry> findDraftOperationLock(Long draftId) {
+        return Optional.ofNullable(copyLock(operationLocks.get(draftId)));
+    }
+
+    @Override
+    public boolean tryAcquireDraftOperationLock(DraftOperationLockEntry lockEntry, LocalDateTime now) {
+        if (lockEntry == null || lockEntry.getDraftId() == null) {
+            throw new IllegalArgumentException("lockEntry/draftId required");
+        }
+        final boolean[] acquired = {false};
+        operationLocks.compute(lockEntry.getDraftId(), (draftId, existing) -> {
+            if (existing == null || isExpired(existing, now)) {
+                acquired[0] = true;
+                return copyLock(lockEntry);
+            }
+            return existing;
+        });
+        return acquired[0];
+    }
+
+    @Override
+    public boolean renewDraftOperationLock(Long draftId,
+                                           Integer targetPublishedVersion,
+                                           String lockedBy,
+                                           LocalDateTime lockedAt,
+                                           LocalDateTime expiresAt) {
+        if (draftId == null) {
+            throw new IllegalArgumentException("draftId required");
+        }
+        final boolean[] renewed = {false};
+        operationLocks.computeIfPresent(draftId, (ignored, existing) -> {
+            if (!Objects.equals(existing.getTargetPublishedVersion(), targetPublishedVersion)) {
+                return existing;
+            }
+            DraftOperationLockEntry next = copyLock(existing);
+            next.setLockedBy(lockedBy);
+            next.setLockedAt(lockedAt);
+            next.setExpiresAt(expiresAt);
+            renewed[0] = true;
+            return next;
+        });
+        return renewed[0];
+    }
+
+    @Override
+    public boolean releaseDraftOperationLock(Long draftId, Integer targetPublishedVersion) {
+        if (draftId == null) {
+            throw new IllegalArgumentException("draftId required");
+        }
+        final boolean[] released = {false};
+        operationLocks.computeIfPresent(draftId, (ignored, existing) -> {
+            if (Objects.equals(existing.getTargetPublishedVersion(), targetPublishedVersion)) {
+                released[0] = true;
+                return null;
+            }
+            return existing;
+        });
+        return released[0];
     }
 
     /**
@@ -135,9 +200,26 @@ public class InMemoryWorkflowStore implements WorkflowStore {
      */
 
     @Override
-    public ContentDraft updateDraft(ContentDraft draft) {
-        drafts.put(draft.getId(), draft);
-        return draft;
+    public ContentDraft updateDraft(ContentDraft draft, EnumSet<WorkflowStatus> expectedStatuses) {
+        if (draft == null || draft.getId() == null) {
+            throw new IllegalArgumentException("draft/id required");
+        }
+        EnumSet<WorkflowStatus> requiredStatuses = normalizeExpectedStatuses(expectedStatuses);
+        ContentDraft updated = drafts.compute(draft.getId(), (draftId, existing) -> {
+            if (existing == null) {
+                throw new IllegalStateException("draft not found: " + draftId);
+            }
+            if (!Objects.equals(existing.getVersion(), draft.getVersion())) {
+                throw concurrentModification(draft.getVersion(), existing.getVersion());
+            }
+            if (!requiredStatuses.contains(existing.getStatus())) {
+                throw invalidWorkflowState(requiredStatuses, existing.getStatus());
+            }
+            ContentDraft next = copyDraft(draft);
+            next.setVersion(existing.getVersion() + 1);
+            return next;
+        });
+        return copyDraft(updated);
     }
 
     /**
@@ -559,5 +641,67 @@ public class InMemoryWorkflowStore implements WorkflowStore {
     private String commandKey(Long draftId, String commandType, String idempotencyKey) {
         // ASCII-only delimiter to avoid encoding issues on Windows consoles/editors.
         return draftId + "|" + commandType + "|" + idempotencyKey;
+    }
+
+    private EnumSet<WorkflowStatus> normalizeExpectedStatuses(EnumSet<WorkflowStatus> expectedStatuses) {
+        if (expectedStatuses == null || expectedStatuses.isEmpty()) {
+            return EnumSet.allOf(WorkflowStatus.class);
+        }
+        return EnumSet.copyOf(expectedStatuses);
+    }
+
+    private com.contentworkflow.common.exception.BusinessException concurrentModification(Long expectedVersion, Long actualVersion) {
+        return new com.contentworkflow.common.exception.BusinessException(
+                "CONCURRENT_MODIFICATION",
+                "draft changed concurrently; expected version=" + expectedVersion
+                        + ", actual version=" + actualVersion
+        );
+    }
+
+    private com.contentworkflow.common.exception.BusinessException invalidWorkflowState(EnumSet<WorkflowStatus> expectedStatuses,
+                                                                                        WorkflowStatus actualStatus) {
+        return new com.contentworkflow.common.exception.BusinessException(
+                "INVALID_WORKFLOW_STATE",
+                "draft state precondition failed, expected one of " + expectedStatuses + ", current state: " + actualStatus
+        );
+    }
+
+    private ContentDraft copyDraft(ContentDraft draft) {
+        if (draft == null) {
+            return null;
+        }
+        return ContentDraft.builder()
+                .id(draft.getId())
+                .version(draft.getVersion())
+                .bizNo(draft.getBizNo())
+                .title(draft.getTitle())
+                .summary(draft.getSummary())
+                .body(draft.getBody())
+                .draftVersion(draft.getDraftVersion())
+                .publishedVersion(draft.getPublishedVersion())
+                .status(draft.getStatus())
+                .currentSnapshotId(draft.getCurrentSnapshotId())
+                .lastReviewComment(draft.getLastReviewComment())
+                .createdAt(draft.getCreatedAt())
+                .updatedAt(draft.getUpdatedAt())
+                .build();
+    }
+
+    private DraftOperationLockEntry copyLock(DraftOperationLockEntry lockEntry) {
+        if (lockEntry == null) {
+            return null;
+        }
+        return DraftOperationLockEntry.builder()
+                .draftId(lockEntry.getDraftId())
+                .operationType(lockEntry.getOperationType())
+                .targetPublishedVersion(lockEntry.getTargetPublishedVersion())
+                .lockedBy(lockEntry.getLockedBy())
+                .lockedAt(lockEntry.getLockedAt())
+                .expiresAt(lockEntry.getExpiresAt())
+                .build();
+    }
+
+    private boolean isExpired(DraftOperationLockEntry lockEntry, LocalDateTime now) {
+        return lockEntry.getExpiresAt() != null && !lockEntry.getExpiresAt().isAfter(now);
     }
 }

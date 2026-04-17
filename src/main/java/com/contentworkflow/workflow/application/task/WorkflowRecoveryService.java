@@ -6,11 +6,14 @@ import com.contentworkflow.common.messaging.outbox.OutboxEventEntity;
 import com.contentworkflow.common.messaging.outbox.OutboxEventRepository;
 import com.contentworkflow.common.messaging.outbox.OutboxEventStatus;
 import com.contentworkflow.common.web.auth.WorkflowOperatorIdentity;
+import com.contentworkflow.workflow.application.store.DraftOperationLockEntry;
 import com.contentworkflow.workflow.application.store.PublishLogEntry;
 import com.contentworkflow.workflow.application.store.WorkflowAuditLogFactory;
 import com.contentworkflow.workflow.application.store.WorkflowStore;
 import com.contentworkflow.workflow.domain.entity.ContentDraft;
+import com.contentworkflow.workflow.domain.entity.ContentSnapshot;
 import com.contentworkflow.workflow.domain.entity.PublishTask;
+import com.contentworkflow.workflow.domain.enums.DraftOperationType;
 import com.contentworkflow.workflow.domain.enums.PublishTaskStatus;
 import com.contentworkflow.workflow.domain.enums.WorkflowAuditResult;
 import com.contentworkflow.workflow.domain.enums.WorkflowAuditTargetType;
@@ -22,6 +25,7 @@ import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -49,6 +53,9 @@ public class WorkflowRecoveryService {
     private final WorkflowStore workflowStore;
     private final OutboxEventRepository outboxEventRepository;
     private final CacheManager cacheManager;
+
+    @Value("${workflow.draft.operationLockSeconds:1800}")
+    private int draftOperationLockSeconds;
 
     /**
      * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
@@ -319,6 +326,7 @@ public class WorkflowRecoveryService {
 
         PublishTaskStatus beforeStatus = task.getStatus();
         LocalDateTime now = LocalDateTime.now();
+        ensureDraftOperationLock(draft, task, now, operator);
         task.setStatus(PublishTaskStatus.PENDING);
         task.setRetryTimes(0);
         task.setErrorMessage(null);
@@ -328,7 +336,7 @@ public class WorkflowRecoveryService {
         task.setUpdatedAt(now);
         workflowStore.updatePublishTask(task);
 
-        resumeDraftPublishingIfNeeded(draft, now);
+        draft = resumeDraftPublishingIfNeeded(draft, now);
 
         workflowStore.insertPublishLog(WorkflowAuditLogFactory.taskAction(
                         task,
@@ -365,12 +373,79 @@ public class WorkflowRecoveryService {
      * @param now 参数 now 对应的业务输入值
      */
 
-    private void resumeDraftPublishingIfNeeded(ContentDraft draft, LocalDateTime now) {
+    private ContentDraft resumeDraftPublishingIfNeeded(ContentDraft draft, LocalDateTime now) {
         if (draft.getStatus() == WorkflowStatus.PUBLISH_FAILED) {
             draft.setStatus(WorkflowStatus.PUBLISHING);
             draft.setUpdatedAt(now);
-            workflowStore.updateDraft(draft);
+            try {
+                return workflowStore.updateDraft(draft, EnumSet.of(WorkflowStatus.PUBLISH_FAILED));
+            } catch (BusinessException ex) {
+                if (!isConditionalTransitionConflict(ex)) {
+                    throw ex;
+                }
+                return workflowStore.findDraftById(draft.getId())
+                        .orElseThrow(() -> new BusinessException("DRAFT_NOT_FOUND", "draft not found"));
+            }
         }
+        return draft;
+    }
+
+    private void ensureDraftOperationLock(ContentDraft draft,
+                                          PublishTask task,
+                                          LocalDateTime now,
+                                          WorkflowOperatorIdentity operator) {
+        DraftOperationLockEntry current = workflowStore.findDraftOperationLock(draft.getId()).orElse(null);
+        if (current != null
+                && !isExpired(current, now)
+                && Objects.equals(current.getTargetPublishedVersion(), task.getPublishedVersion())) {
+            return;
+        }
+
+        DraftOperationType operationType = resolveOperationType(draft.getId(), task.getPublishedVersion());
+        DraftOperationLockEntry desired = DraftOperationLockEntry.builder()
+                .draftId(draft.getId())
+                .operationType(operationType)
+                .targetPublishedVersion(task.getPublishedVersion())
+                .lockedBy("recovery:" + operator.operatorName())
+                .lockedAt(now)
+                .expiresAt(now.plusSeconds(Math.max(60, draftOperationLockSeconds)))
+                .build();
+        if (workflowStore.tryAcquireDraftOperationLock(desired, now)) {
+            return;
+        }
+        DraftOperationLockEntry latest = workflowStore.findDraftOperationLock(draft.getId()).orElse(current);
+        throw draftOperationInProgress(draft.getId(), latest);
+    }
+
+    private DraftOperationType resolveOperationType(Long draftId, Integer publishedVersion) {
+        return workflowStore.listSnapshots(draftId).stream()
+                .filter(snapshot -> Objects.equals(snapshot.getPublishedVersion(), publishedVersion))
+                .findFirst()
+                .map(ContentSnapshot::isRollback)
+                .map(rollback -> rollback ? DraftOperationType.ROLLBACK : DraftOperationType.PUBLISH)
+                .orElse(DraftOperationType.PUBLISH);
+    }
+
+    private boolean isConditionalTransitionConflict(BusinessException ex) {
+        return "CONCURRENT_MODIFICATION".equals(ex.getCode())
+                || "INVALID_WORKFLOW_STATE".equals(ex.getCode());
+    }
+
+    private boolean isExpired(DraftOperationLockEntry lockEntry, LocalDateTime now) {
+        return lockEntry.getExpiresAt() != null && !lockEntry.getExpiresAt().isAfter(now);
+    }
+
+    private BusinessException draftOperationInProgress(Long draftId, DraftOperationLockEntry current) {
+        String detail = current == null
+                ? "another draft operation is already in progress"
+                : "operationType=" + current.getOperationType()
+                + ", targetPublishedVersion=" + current.getTargetPublishedVersion()
+                + ", lockedBy=" + current.getLockedBy()
+                + ", expiresAt=" + current.getExpiresAt();
+        return new BusinessException(
+                "DRAFT_OPERATION_IN_PROGRESS",
+                "draft operation is locked, draftId=" + draftId + ", " + detail
+        );
     }
 
     /**

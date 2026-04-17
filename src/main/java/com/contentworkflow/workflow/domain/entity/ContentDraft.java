@@ -14,6 +14,7 @@ import java.time.LocalDateTime;
 @Builder
 public class ContentDraft {
     private Long id;
+    private Long version;
     private String bizNo;
     private String title;
     private String summary;

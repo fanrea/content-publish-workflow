@@ -1,17 +1,17 @@
 package com.contentworkflow.workflow.application.task;
 
+import com.contentworkflow.common.exception.BusinessException;
 import com.contentworkflow.common.messaging.WorkflowEvent;
 import com.contentworkflow.common.messaging.WorkflowEventPublisher;
 import com.contentworkflow.common.messaging.WorkflowEventTypes;
-import com.contentworkflow.workflow.application.store.PublishLogEntry;
 import com.contentworkflow.workflow.application.store.WorkflowAuditLogFactory;
 import com.contentworkflow.workflow.application.store.WorkflowStore;
 import com.contentworkflow.workflow.domain.entity.ContentDraft;
 import com.contentworkflow.workflow.domain.entity.ContentSnapshot;
 import com.contentworkflow.workflow.domain.entity.PublishTask;
-import com.contentworkflow.workflow.domain.enums.WorkflowAuditResult;
 import com.contentworkflow.workflow.domain.enums.PublishTaskStatus;
 import com.contentworkflow.workflow.domain.enums.PublishTaskType;
+import com.contentworkflow.workflow.domain.enums.WorkflowAuditResult;
 import com.contentworkflow.workflow.domain.enums.WorkflowStatus;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -20,13 +20,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
 /**
- * 后台工作组件，用于异步执行任务、投递消息或处理补偿逻辑。
+ * Background worker that dispatches publish tasks and handles task failure.
  */
 @Component
 public class PublishTaskWorker {
@@ -34,6 +35,7 @@ public class PublishTaskWorker {
     private final WorkflowStore store;
     private final Map<PublishTaskType, PublishTaskHandler> handlers;
     private final WorkflowEventPublisher eventPublisher;
+    private final PublishTaskProgressService taskProgressService;
 
     private final String workerId = "cpw-" + UUID.randomUUID();
 
@@ -55,29 +57,19 @@ public class PublishTaskWorker {
     @Value("${workflow.scheduler.local.enabled:true}")
     private boolean localScheduleEnabled;
 
-    /**
-     * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
-     *
-     * @param store 参数 store 对应的业务输入值
-     * @param handlerList 待处理的数据集合
-     * @param eventPublisher 参数 eventPublisher 对应的业务输入值
-     */
-
     public PublishTaskWorker(WorkflowStore store,
                              List<PublishTaskHandler> handlerList,
-                             WorkflowEventPublisher eventPublisher) {
+                             WorkflowEventPublisher eventPublisher,
+                             PublishTaskProgressService taskProgressService) {
         this.store = store;
         this.eventPublisher = eventPublisher;
+        this.taskProgressService = taskProgressService;
         EnumMap<PublishTaskType, PublishTaskHandler> map = new EnumMap<>(PublishTaskType.class);
-        for (PublishTaskHandler h : handlerList) {
-            map.put(h.taskType(), h);
+        for (PublishTaskHandler handler : handlerList) {
+            map.put(handler.taskType(), handler);
         }
         this.handlers = Map.copyOf(map);
     }
-
-    /**
-     * 处理 poll once 相关逻辑，并返回对应的执行结果。
-     */
 
     @Transactional
     public void pollOnce() {
@@ -89,11 +81,9 @@ public class PublishTaskWorker {
         for (PublishTask task : claimed) {
             executeOne(task, now);
         }
+        taskProgressService.renewLeasesForAwaitingTasks(now, workerId);
     }
 
-    /**
-     * 处理 scheduled poll once 相关逻辑，并返回对应的执行结果。
-     */
     @Scheduled(fixedDelayString = "${workflow.task.worker.pollDelayMs:1000}")
     public void scheduledPollOnce() {
         if (!localScheduleEnabled) {
@@ -102,15 +92,7 @@ public class PublishTaskWorker {
         pollOnce();
     }
 
-    /**
-     * 处理 execute one 相关逻辑，并返回对应的执行结果。
-     *
-     * @param task 任务对象
-     * @param now 参数 now 对应的业务输入值
-     */
-
     private void executeOne(PublishTask task, LocalDateTime now) {
-        // Double-check status to avoid duplicate execution.
         if (task.getStatus() != PublishTaskStatus.RUNNING) {
             return;
         }
@@ -122,7 +104,7 @@ public class PublishTaskWorker {
         }
 
         ContentSnapshot snapshot = store.listSnapshots(task.getDraftId()).stream()
-                .filter(s -> Objects.equals(s.getPublishedVersion(), task.getPublishedVersion()))
+                .filter(item -> Objects.equals(item.getPublishedVersion(), task.getPublishedVersion()))
                 .findFirst()
                 .orElse(null);
         if (snapshot == null) {
@@ -137,57 +119,21 @@ public class PublishTaskWorker {
         }
 
         PublishTaskContext ctx = new PublishTaskContext(draft, snapshot, task, snapshot.getOperator(), eventPublisher);
-
         try {
             handler.execute(ctx);
-            markSuccess(task, now);
-            tryFinalizeDraft(draft.getId(), task.getPublishedVersion(), now, snapshot.getOperator());
-        } catch (Exception e) {
-            markFailedOrDead(task, now, e);
+            taskProgressService.markTaskDispatched(task, now, workerId);
+        } catch (Exception ex) {
+            markFailedOrDead(task, now, ex);
             if (task.getStatus() == PublishTaskStatus.DEAD) {
-                markDraftFailedAndCompensate(draft.getId(), task.getPublishedVersion(), now, snapshot.getOperator(), e.getMessage());
+                markDraftFailedAndCompensate(draft.getId(), task.getPublishedVersion(), now, snapshot.getOperator(), ex.getMessage());
             }
         }
     }
 
-    /**
-     * 处理 mark success 相关逻辑，并返回对应的执行结果。
-     *
-     * @param task 任务对象
-     * @param now 参数 now 对应的业务输入值
-     */
-
-    private void markSuccess(PublishTask task, LocalDateTime now) {
-        String operatorName = workerId;
-        task.setStatus(PublishTaskStatus.SUCCESS);
-        task.setErrorMessage(null);
-        task.setNextRunAt(null);
-        task.setLockedBy(null);
-        task.setLockedAt(null);
-        task.setUpdatedAt(now);
-        store.updatePublishTask(task);
-
-        store.insertPublishLog(WorkflowAuditLogFactory.taskAction(task, "TASK_SUCCESS", workerId, operatorName)
-                .beforeStatus(PublishTaskStatus.RUNNING.name())
-                .afterStatus(PublishTaskStatus.SUCCESS.name())
-                .result(WorkflowAuditResult.SUCCESS)
-                .remark(task.getTaskType() + "@" + task.getPublishedVersion())
-                .createdAt(now)
-                .build());
-    }
-
-    /**
-     * 处理 mark failed or dead 相关逻辑，并返回对应的执行结果。
-     *
-     * @param task 任务对象
-     * @param now 参数 now 对应的业务输入值
-     * @param e 参数 e 对应的业务输入值
-     */
-
-    private void markFailedOrDead(PublishTask task, LocalDateTime now, Exception e) {
+    private void markFailedOrDead(PublishTask task, LocalDateTime now, Exception ex) {
         int retry = (task.getRetryTimes() == null ? 0 : task.getRetryTimes()) + 1;
         task.setRetryTimes(retry);
-        task.setErrorMessage(shortError(e));
+        task.setErrorMessage(shortError(ex));
         task.setLockedBy(null);
         task.setLockedAt(null);
         task.setUpdatedAt(now);
@@ -208,7 +154,6 @@ public class PublishTaskWorker {
             return;
         }
 
-        // Exponential backoff: baseDelaySeconds * 2^(retry-1), capped at 5 minutes.
         long delay = (long) baseDelaySeconds * (1L << Math.min(10, retry - 1));
         delay = Math.min(delay, 300);
         task.setStatus(PublishTaskStatus.FAILED);
@@ -225,14 +170,6 @@ public class PublishTaskWorker {
                 .build());
     }
 
-    /**
-     * 处理 mark dead 相关逻辑，并返回对应的执行结果。
-     *
-     * @param task 任务对象
-     * @param now 参数 now 对应的业务输入值
-     * @param reason 参数 reason 对应的业务输入值
-     */
-
     private void markDead(PublishTask task, LocalDateTime now, String reason) {
         task.setStatus(PublishTaskStatus.DEAD);
         task.setErrorMessage(reason);
@@ -242,75 +179,6 @@ public class PublishTaskWorker {
         task.setUpdatedAt(now);
         store.updatePublishTask(task);
     }
-
-    /**
-     * 处理 try finalize draft 相关逻辑，并返回对应的执行结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
-     *
-     * @param draftId 草稿唯一标识
-     * @param publishedVersion 参数 publishedVersion 对应的业务输入值
-     * @param now 参数 now 对应的业务输入值
-     * @param operator 当前操作人身份信息
-     */
-
-    private void tryFinalizeDraft(Long draftId, Integer publishedVersion, LocalDateTime now, String operator) {
-        ContentDraft draft = store.findDraftById(draftId).orElse(null);
-        if (draft == null) {
-            return;
-        }
-        // Only finalize the current version; ignore stale tasks.
-        if (!Objects.equals(draft.getPublishedVersion(), publishedVersion)) {
-            return;
-        }
-        if (draft.getStatus() != WorkflowStatus.PUBLISHING) {
-            return;
-        }
-
-        boolean hasDead = store.listPublishTasks(draftId).stream()
-                .filter(t -> Objects.equals(t.getPublishedVersion(), publishedVersion))
-                .anyMatch(t -> t.getStatus() == PublishTaskStatus.DEAD);
-        if (hasDead) {
-            return;
-        }
-
-        boolean allSuccess = store.listPublishTasks(draftId).stream()
-                .filter(t -> Objects.equals(t.getPublishedVersion(), publishedVersion))
-                .allMatch(t -> t.getStatus() == PublishTaskStatus.SUCCESS);
-        if (!allSuccess) {
-            return;
-        }
-
-        draft.setStatus(WorkflowStatus.PUBLISHED);
-        draft.setUpdatedAt(now);
-        store.updateDraft(draft);
-        store.insertPublishLog(WorkflowAuditLogFactory.publishSystemAction(draftId, publishedVersion, "PUBLISH_COMPLETED", workerId, operator == null ? "system" : operator)
-                .beforeStatus(WorkflowStatus.PUBLISHING.name())
-                .afterStatus(WorkflowStatus.PUBLISHED.name())
-                .result(WorkflowAuditResult.SUCCESS)
-                .remark("version=" + publishedVersion)
-                .createdAt(now)
-                .build());
-
-        // Extension point: emit a domain event after publish completed (outbox -> relay -> RabbitMQ).
-        // Best-effort: publisher defaults to no-op, so it won't break the main flow.
-        eventPublisher.publish(WorkflowEvent.of(
-                WorkflowEventTypes.CONTENT_PUBLISHED,
-                "content_draft",
-                String.valueOf(draftId),
-                publishedVersion,
-                Map.of("draftId", draftId, "publishedVersion", publishedVersion),
-                Map.of("operator", operator == null ? "system" : operator)
-        ));
-    }
-
-    /**
-     * 处理 mark draft failed and compensate 相关逻辑，并返回对应的执行结果。该方法会结合当前操作人信息参与鉴权、审计或流程控制。
-     *
-     * @param draftId 草稿唯一标识
-     * @param publishedVersion 参数 publishedVersion 对应的业务输入值
-     * @param now 参数 now 对应的业务输入值
-     * @param operator 当前操作人身份信息
-     * @param reason 参数 reason 对应的业务输入值
-     */
 
     private void markDraftFailedAndCompensate(Long draftId,
                                               Integer publishedVersion,
@@ -324,10 +192,21 @@ public class PublishTaskWorker {
         if (!Objects.equals(draft.getPublishedVersion(), publishedVersion)) {
             return;
         }
+        if (draft.getStatus() != WorkflowStatus.PUBLISHING) {
+            return;
+        }
 
         draft.setStatus(WorkflowStatus.PUBLISH_FAILED);
         draft.setUpdatedAt(now);
-        store.updateDraft(draft);
+        try {
+            draft = store.updateDraft(draft, EnumSet.of(WorkflowStatus.PUBLISHING));
+        } catch (BusinessException ex) {
+            if (isConditionalTransitionConflict(ex)) {
+                return;
+            }
+            throw ex;
+        }
+
         store.insertPublishLog(WorkflowAuditLogFactory.publishSystemAction(draftId, publishedVersion, "PUBLISH_FAILED", workerId, operator == null ? "system" : operator)
                 .beforeStatus(WorkflowStatus.PUBLISHING.name())
                 .afterStatus(WorkflowStatus.PUBLISH_FAILED.name())
@@ -338,7 +217,6 @@ public class PublishTaskWorker {
                 .createdAt(now)
                 .build());
 
-        // Extension point: publish-failed event for downstream alerting/rollback/manual intervention.
         eventPublisher.publish(WorkflowEvent.of(
                 WorkflowEventTypes.CONTENT_PUBLISH_FAILED,
                 "content_draft",
@@ -348,53 +226,49 @@ public class PublishTaskWorker {
                 Map.of("operator", operator == null ? "system" : operator)
         ));
 
-        // Best-effort compensation for tasks already succeeded in this version (handlers are no-op by default).
         List<PublishTask> succeeded = store.listPublishTasks(draftId).stream()
-                .filter(t -> Objects.equals(t.getPublishedVersion(), publishedVersion))
-                .filter(t -> t.getStatus() == PublishTaskStatus.SUCCESS)
+                .filter(task -> Objects.equals(task.getPublishedVersion(), publishedVersion))
+                .filter(task -> task.getStatus() == PublishTaskStatus.SUCCESS)
                 .toList();
 
         ContentSnapshot snapshot = store.listSnapshots(draftId).stream()
-                .filter(s -> Objects.equals(s.getPublishedVersion(), publishedVersion))
+                .filter(item -> Objects.equals(item.getPublishedVersion(), publishedVersion))
                 .findFirst()
                 .orElse(null);
         if (snapshot == null) {
             return;
         }
-        for (PublishTask t : succeeded) {
-            PublishTaskHandler handler = handlers.get(t.getTaskType());
+        for (PublishTask task : succeeded) {
+            PublishTaskHandler handler = handlers.get(task.getTaskType());
             if (handler == null) {
                 continue;
             }
             try {
-                handler.compensate(new PublishTaskContext(draft, snapshot, t, operator, eventPublisher));
-                store.insertPublishLog(WorkflowAuditLogFactory.taskAction(t, "TASK_COMPENSATED", workerId, workerId)
+                handler.compensate(new PublishTaskContext(draft, snapshot, task, operator, eventPublisher));
+                store.insertPublishLog(WorkflowAuditLogFactory.taskAction(task, "TASK_COMPENSATED", workerId, workerId)
                         .beforeStatus(PublishTaskStatus.SUCCESS.name())
                         .afterStatus(PublishTaskStatus.SUCCESS.name())
                         .result(WorkflowAuditResult.SUCCESS)
-                        .remark(t.getTaskType() + "@" + publishedVersion)
+                        .remark(task.getTaskType() + "@" + publishedVersion)
                         .createdAt(now)
                         .build());
             } catch (Exception ignored) {
-                // Compensation failure must not block the main flow. In production, record it or enqueue a retry task.
+                // Best-effort compensation only.
             }
         }
     }
 
-    /**
-     * 处理 short error 相关逻辑，并返回对应的执行结果。
-     *
-     * @param e 参数 e 对应的业务输入值
-     * @return 方法处理后的结果对象
-     */
-
-    private static String shortError(Exception e) {
-        String msg = e.getMessage();
+    private static String shortError(Exception ex) {
+        String msg = ex.getMessage();
         if (msg == null || msg.isBlank()) {
-            msg = e.getClass().getSimpleName();
+            msg = ex.getClass().getSimpleName();
         }
-        // Avoid storing very long stack traces in the error field.
         msg = msg.replace("\r", " ").replace("\n", " ");
         return msg.length() > 200 ? msg.substring(0, 200) : msg;
+    }
+
+    private boolean isConditionalTransitionConflict(BusinessException ex) {
+        return "CONCURRENT_MODIFICATION".equals(ex.getCode())
+                || "INVALID_WORKFLOW_STATE".equals(ex.getCode());
     }
 }

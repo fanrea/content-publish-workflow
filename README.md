@@ -1,370 +1,383 @@
-﻿# 内容发布工作流服务
+# 内容发布工作流服务
 
-一个面向内容管理后台的后端服务，聚焦内容草稿、审核、发布、版本快照、回滚、差异发布、异步副作用编排与人工恢复能力。
+这是一个围绕“草稿 -> 审核 -> 发布 -> 回滚 -> 下线 -> 恢复”完整链路设计的后端服务。项目重点不在于堆接口数量，而在于把工作流状态机、版本快照、异步副作用、最终一致性、人工恢复和审计追踪这些真实生产系统里常见的问题做成一个可运行、可讲清楚、可继续扩展的实现。
 
-项目目标不是做一个“大而全”的内容平台，而是把“内容发布工作流”这条核心链路做扎实，体现真实业务系统中的状态机、最终一致性、任务编排、审计追踪与故障恢复设计。
+项目当前使用 Java 17、Spring Boot 3、Spring Data JPA、MySQL/H2、Redis、RabbitMQ、Actuator、XXL-Job。默认模式下可以只依赖 H2 启动；需要更接近生产的演示时，再按需打开 `mysql`、`redis`、`rabbitmq`、`ops`、`loadtest`、`xxl-job` 等 profile。
 
----
+## 一、项目解决什么问题
 
-## 1. 项目简介
+很多内容系统的“发布”并不是一次简单的数据库更新，而是一组有顺序、有状态、有副作用的业务动作：
 
-本项目是一个独立的内容发布工作流域服务，采用前后端分离模式，仅提供 HTTP JSON REST API，不负责页面渲染、登录态维护或真实外部下游系统实现。
+- 编辑先创建和修改草稿
+- 草稿进入审核流
+- 审核通过后才能发起发布
+- 发布时不仅要保存最终内容，还要触发搜索刷新、读模型同步、通知分发等副作用
+- 任一步骤失败后，需要支持重试、补偿和人工恢复
+- 运维和研发还需要知道一次发布到底发生了什么，问题出在哪一环
 
-服务职责包括：
+这个项目就是把这条链路拆清楚、落到代码和表结构里。
 
-- 草稿创建、编辑、详情查询、分页筛选、统计
-- 审核提交流程、审核通过、审核驳回、审核记录追踪
-- 发布状态机推进
-- 发布快照保存与历史版本追踪
-- 基于历史快照的一键回滚
-- 内容下线
-- 发布差异识别与副作用任务编排
-- Outbox + RabbitMQ 异步消息链路
-- 发布任务重试、死信、人工恢复
-- 结构化审计日志与发布时间线追踪
+## 二、当前已经具备的能力
 
----
+### 1. 草稿能力
 
-## 2. 技术栈
+- 创建草稿、更新草稿、查询详情
+- 草稿分页筛选
+- 草稿摘要接口
+- 草稿状态统计接口
+- 草稿列表缓存与统计缓存
 
-### 基础框架
-- Java 17
-- Spring Boot 3.2.5
-- Spring Web
-- Spring Validation
+### 2. 审核能力
 
-### 持久化
-- Spring Data JPA
-- MySQL
-- H2（本地演示 / 测试）
+- 编辑提交审核
+- 审核人审批通过或驳回
+- 审核记录留痕
+- 驳回意见回写到草稿
 
-### 缓存
-- Spring Cache
-- Redis
-- Lettuce
-- commons-pool2
+### 3. 发布主链路
 
-### 消息与异步
-- RabbitMQ
-- Spring AMQP
-- Outbox Pattern
+- 发布前校验工作流状态
+- 支持 `Idempotency-Key` 幂等发布
+- 每次发布生成不可变快照
+- 根据内容差异生成副作用任务
+- 发布请求写入发布命令、任务、日志
+- 草稿状态进入 `PUBLISHING`
+- 由异步 worker 推动到 `PUBLISHED` 或 `PUBLISH_FAILED`
 
-### 调度与运维
-- XXL-Job Executor
-- Spring Boot Actuator
-- Micrometer + Prometheus
+### 4. 版本与回滚
 
-### 文档与开发支持
-- SpringDoc OpenAPI / Swagger UI
-- Lombok
+- 每次成功发布都对应一个 `publishedVersion`
+- 快照不可变
+- 回滚不会覆盖旧版本，而是基于历史快照再生成一个新的发布版本
+- 支持查看快照历史和发布差异
 
----
+### 5. 异步副作用与最终一致性
 
-## 3. 当前已实现的核心能力
+- 发布任务表负责执行副作用
+- 内置三类任务：
+  - 刷新搜索索引
+  - 同步下游读模型
+  - 发送发布通知
+- 任务支持领取、执行、失败重试、死信
+- Outbox 表负责在主事务内可靠落库事件
+- Relay worker 负责把 outbox 事件异步投递到 RabbitMQ
+- 消费端带有去重保护和审计记录
 
-### 3.1 草稿管理
-已支持：
+### 6. 人工恢复
 
-- 创建草稿
-- 更新草稿
-- 草稿详情查询
-- 草稿分页查询
-- 关键字 / 状态 / 时间范围筛选
-- 草稿状态统计
+- 查看当前草稿下可恢复的失败任务
+- 对单个失败任务手动重试
+- 对当前发布版本的失败任务批量重试
+- 查看失败或死信的 outbox 事件
+- 对单个 outbox 事件手动重试
+- 只允许恢复当前 `publishedVersion` 的任务，避免误操作旧版本
 
-### 3.2 审核流
-已支持：
+### 7. 审计与时间线
 
-- 提交审核
-- 审核通过
-- 审核驳回
-- 审核记录查询
+- 审计日志记录操作人、目标对象、前后状态、错误码、错误信息
+- 支持按草稿查看日志
+- 支持按 `traceId` 查看一次链路时间线
+- 支持按 `publishedVersion` 查看聚合后的发布时间线
 
-### 3.3 发布主链路
-发布流程已经统一为：
-
-- 发布接口只负责把状态推进到 `PUBLISHING`
-- 在主事务内完成数据库写入：
-  - 草稿状态推进
-  - 快照保存
-  - 发布任务创建
-  - 发布日志记录
-- 最终由异步 worker 推进到：
-  - `PUBLISHED`
-  - `PUBLISH_FAILED`
-
-这意味着发布接口本身不直接执行真实副作用，而是负责“可靠落库 + 状态推进”。
-
-### 3.4 版本快照与回滚
-已支持：
-
-- 每次发布保存内容快照
-- 历史版本追踪
-- 基于历史快照的一键回滚
-- 回滚复用发布任务编排，而不是简单覆盖正文
-
-### 3.5 内容下线
-已支持：
-
-- 已发布内容下线
-- 下线日志记录
-
-### 3.6 差异发布
-已支持：
-
-- 展示草稿与已发布版本的 diff
-- 根据变更范围决定是否需要执行副作用任务
-
-当前差异识别维度包括：
-
-- 首次发布
-- 格式调整
-- 元数据变更
-- 正文变更
-
-可基于差异决定是否触发：
-
-- 搜索刷新
-- 读模型同步
-- 通知分发
-
-### 3.7 发布任务编排
-已支持：
-
-- 发布任务表
-- 任务状态管理
-- 失败重试
-- 死信
-- 第一版补偿逻辑
-- 当前版本任务人工重试
-- 单任务人工恢复
-
-### 3.8 Outbox + RabbitMQ 异步链路
-已支持：
-
-- Outbox 模式落库
-- RabbitMQ relay worker
-- exchange / queue / binding 声明
-- 消费者监听入口
-- 消费防重
-- 消费审计日志
-
-当前消费侧已经完成工程接缝，但真实搜索、读模型、通知系统仍为 stub。
-
-### 3.9 人工恢复闭环
-已支持：
-
-- 查询可恢复发布任务
-- 单任务人工重试
-- 当前发布版本批量人工重试
-- 查询失败 / 死信 outbox 事件
-- outbox 事件人工重试
-- 只允许恢复当前 `publishedVersion` 对应任务，避免误恢复历史版本
-
-### 3.10 统一审计与时间线
-已支持结构化审计字段：
-
-- `traceId`
-- `requestId`
-- `operatorId`
-- `operatorName`
-- `targetType`
-- `targetId`
-- `publishedVersion`
-- `taskId`
-- `outboxEventId`
-- `beforeStatus`
-- `afterStatus`
-- `result`
-- `errorCode`
-- `errorMessage`
-
-并提供：
-
-- 草稿维度审计日志查询
-- `traceId` 维度全链路时间线查询
-- `publishedVersion` 维度聚合时间线查询
-
----
-
-## 4. 核心设计亮点
-
-### 4.1 发布接口不直接做副作用
-发布接口只做两件事：
-
-1. 主事务内可靠写库
-2. 把状态推进到 `PUBLISHING`
-
-真正的副作用由异步任务执行，最终再由 worker 推进到终态。
-
-这样可以避免：
-
-- 接口执行时间过长
-- 发布请求和副作用执行强耦合
-- 失败难恢复
-- 状态不一致难追踪
-
-### 4.2 Outbox 保证最终一致性
-业务事务中只写数据库和 outbox，不直接发 MQ。  
-由 relay worker 轮询 outbox 投递 RabbitMQ，实现：
-
-- 业务提交与消息发送解耦
-- 避免 DB 成功、MQ 失败的不一致
-- 支持失败重试、死信、人工恢复
-
-### 4.3 差异驱动的任务编排
-不是每次发布都执行完整副作用，而是根据差异决定任务集合。  
-这样能更接近真实生产系统中的增量发布思路。
-
-### 4.4 结构化审计追踪
-项目不只是简单打日志，而是把一次发布涉及的：
-
-- 用户发起
-- 审核动作
-- 发布请求
-- 任务执行
-- MQ 消费
-- 失败补偿
-- 人工恢复
-
-统一收敛为结构化审计链路，支持完整时间线追踪。
-
-### 4.5 人工恢复能力
-当任务或 outbox 进入失败 / 死信状态时，不需要人工改库恢复，而是可以通过 API 做受控重试，体现面向生产故障的恢复设计。
-
----
-
-## 5. 项目架构分层
+## 三、项目整体结构
 
 ```text
 src/main/java/com/contentworkflow
-├─ common          # 通用响应、异常、认证、消息基础设施
-├─ workflow
-│  ├─ interfaces   # Controller / DTO / VO
-│  ├─ application  # 应用服务、任务编排、worker
-│  ├─ domain       # 实体、枚举、领域规则
-│  └─ infrastructure # JPA 实体、Repository、持久化适配
+├─ common
+│  ├─ api            统一响应模型
+│  ├─ cache          缓存配置、缓存名称、缓存键
+│  ├─ exception      业务异常
+│  ├─ messaging      事件、Outbox、RabbitMQ、消费防重
+│  ├─ scheduler      XXL-Job 配置
+│  └─ web/auth       轻量权限模型、操作人解析、拦截器
+└─ workflow
+   ├─ interfaces     Controller、DTO、VO
+   ├─ application    应用服务、任务 worker、恢复服务、对账服务
+   ├─ domain         领域实体与枚举
+   └─ infrastructure JPA 实体、Repository、持久化映射
 ```
 
-分层职责：
+各层职责非常明确：
 
-- `interfaces`：提供 REST API，处理请求响应模型
-- `application`：编排业务流程、状态推进、任务执行
-- `domain`：承载领域对象与状态定义
-- `infrastructure`：JPA、MySQL、Redis、RabbitMQ 等基础设施适配
-- `common`：通用能力沉淀
+- `interfaces` 只负责接收 HTTP 请求、参数校验和返回结果
+- `application` 负责编排业务流程和状态推进
+- `domain` 负责承载领域对象和状态定义
+- `infrastructure` 负责把领域对象落到数据库
+- `common` 放通用基础设施，例如缓存、消息、鉴权、异常处理
 
----
+## 四、核心设计思路
 
-## 6. 关键状态与流程
+### 1. 发布接口不直接执行副作用
 
-### 6.1 草稿状态
-典型状态包括：
+发布接口只做主事务内的可靠写入：
 
-- `DRAFT`
-- `UNDER_REVIEW`
-- `APPROVED`
-- `REJECTED`
-- `PUBLISHING`
-- `PUBLISHED`
-- `PUBLISH_FAILED`
-- `OFFLINE`
+- 草稿状态进入 `PUBLISHING`
+- 保存快照
+- 创建副作用任务
+- 记录发布命令
+- 记录审计日志
+- 可选写入 outbox 事件
 
-### 6.2 一次典型发布流程
+真正的副作用由后台 worker 异步执行。这样做有几个直接好处：
+
+- 接口响应更稳定
+- 发布过程更容易恢复
+- 能把失败控制在具体任务上
+- 更容易实现幂等和审计
+
+### 2. 快照不可变
+
+项目把“草稿”和“已发布内容”明确拆成两个概念：
+
+- `content_draft` 是当前可编辑工作副本
+- `content_publish_snapshot` 是已经对外发布的不可变版本
+
+这意味着：
+
+- 修改草稿不会改历史发布结果
+- 回滚本质上是“拿旧快照重新发一次”
+- 审计和排障时能知道某个线上版本到底是哪次发布产出的
+
+### 3. 任务与主业务分离
+
+发布涉及的副作用被建模为 `content_publish_task`。任务表记录：
+
+- 任务类型
+- 当前状态
+- 重试次数
+- 错误信息
+- 下次重试时间
+- 锁定 worker 信息
+
+这样做的结果是：
+
+- 失败可重试
+- 并发 worker 可安全领取任务
+- 能单独恢复某个失败任务
+- 能区分“主事务成功”和“副作用还没完成”
+
+### 4. Outbox 保证最终一致性
+
+项目实现了典型的 Outbox 模式：
+
+- 主业务事务中只负责写数据库和 outbox 表
+- 不在主事务里直接发 MQ
+- 由 outbox relay worker 后续轮询投递到 RabbitMQ
+
+这比“事务里直接发 MQ”更适合做可靠交付，因为它能避免：
+
+- 数据已提交但消息没发出去
+- 消息发出去了但数据库事务回滚
+- MQ 瞬时不可用导致主链路失败
+
+### 5. 恢复能力是内建的，不是事后补的
+
+当前项目不是“失败了手改数据库”，而是明确提供恢复接口：
+
+- 恢复发布任务
+- 恢复 outbox 事件
+- 批量恢复当前发布版本
+- 恢复时自动补审计日志
+
+这让项目更像一个可运维的系统，而不是只在 happy path 上能跑通的 demo。
+
+## 五、状态机说明
+
+草稿工作流状态如下：
+
+- `DRAFT`：草稿中
+- `REVIEWING`：审核中
+- `REJECTED`：审核驳回
+- `APPROVED`：审核通过
+- `PUBLISHING`：发布中
+- `PUBLISHED`：已发布
+- `PUBLISH_FAILED`：发布失败
+- `OFFLINE`：已下线
+
+常见流转路径如下：
 
 ```text
-用户发起发布
-  -> 服务校验状态与幂等
-  -> 主事务内写入：
-     - draft 状态 = PUBLISHING
-     - snapshot
-     - publish tasks
-     - publish logs
-     - outbox event
-  -> worker 异步执行任务
-  -> 任务全部成功 => draft = PUBLISHED
-  -> 任务出现不可恢复失败 => draft = PUBLISH_FAILED
+DRAFT
+  -> 提交审核
+REVIEWING
+  -> 审核通过 -> APPROVED
+  -> 审核驳回 -> REJECTED
+REJECTED
+  -> 编辑后回到 DRAFT
+APPROVED
+  -> 发起发布 -> PUBLISHING
+PUBLISHING
+  -> 任务全部成功 -> PUBLISHED
+  -> 任务不可恢复失败 -> PUBLISH_FAILED
+PUBLISHED
+  -> 回滚 -> PUBLISHING（产生新版本）
+  -> 下线 -> OFFLINE
+PUBLISH_FAILED
+  -> 人工恢复任务 -> PUBLISHING
+OFFLINE
+  -> 允许继续编辑或再次发起工作流
 ```
 
----
+## 六、典型发布过程
 
-## 7. 典型 API 能力
+一次正常发布大致会经历这些步骤：
 
-### 草稿
-- `POST /api/workflows/drafts`
-- `PUT /api/workflows/drafts/{draftId}`
-- `GET /api/workflows/drafts/{draftId}`
-- `GET /api/workflows/drafts/page`
-- `GET /api/workflows/drafts/stats`
+1. 运营或操作人调用发布接口。
+2. 服务检查草稿状态和幂等键。
+3. 主事务内完成：
+   - 草稿状态改为 `PUBLISHING`
+   - 创建新的快照
+   - 计算发布差异
+   - 生成副作用任务
+   - 保存发布命令
+   - 写入审计日志
+   - 如果启用 outbox，则写入 outbox 事件
+4. `PublishTaskWorker` 异步领取任务并执行。
+5. 任务全部成功后，草稿状态推进到 `PUBLISHED`。
+6. 如果任务重试后仍失败，草稿状态进入 `PUBLISH_FAILED`。
+7. 运维或操作人可以通过恢复接口把失败任务重新置回 `PENDING`。
 
-### 审核
-- `POST /api/workflows/drafts/{draftId}/submit-review`
-- `POST /api/workflows/drafts/{draftId}/review`
-- `GET /api/workflows/drafts/{draftId}/reviews`
+## 七、对外接口概览
 
-### 发布与版本
-- `POST /api/workflows/drafts/{draftId}/publish`
-- `POST /api/workflows/drafts/{draftId}/rollback`
-- `POST /api/workflows/drafts/{draftId}/offline`
-- `GET /api/workflows/drafts/{draftId}/snapshots`
-- `GET /api/workflows/drafts/{draftId}/publish-diff`
+基础前缀：`/api/workflows`
 
-### 任务与命令
-- `GET /api/workflows/drafts/{draftId}/tasks`
-- `GET /api/workflows/drafts/{draftId}/commands`
+### 草稿相关
 
-### 审计日志
-- `GET /api/workflows/drafts/{draftId}/logs`
-- `GET /api/workflows/drafts/{draftId}/logs/timeline?traceId=...`
-- `GET /api/workflows/drafts/{draftId}/logs/publish-timeline?publishedVersion=...`
+- `GET /drafts`
+- `GET /drafts/page`
+- `GET /drafts/{draftId}/summary`
+- `GET /drafts/stats`
+- `POST /drafts`
+- `PUT /drafts/{draftId}`
+- `GET /drafts/{draftId}`
 
-### 人工恢复
-- `GET /api/workflows/drafts/{draftId}/recovery/tasks`
-- `POST /api/workflows/drafts/{draftId}/tasks/{taskId}/manual-retry`
-- `POST /api/workflows/drafts/{draftId}/tasks/manual-retry-current-version`
-- `GET /api/workflows/outbox/events/recovery`
-- `POST /api/workflows/outbox/events/{outboxEventId}/manual-retry`
+### 审核相关
 
----
+- `POST /drafts/{draftId}/submit-review`
+- `POST /drafts/{draftId}/review`
+- `GET /drafts/{draftId}/reviews`
 
-## 8. 运行方式
+### 发布相关
 
-### 8.1 环境要求
-- JDK 17+
-- MySQL 8.x
-- Redis
-- RabbitMQ
-- XXL-Job Admin（如需调度演示）
+- `POST /drafts/{draftId}/publish`
+- `POST /drafts/{draftId}/rollback`
+- `GET /drafts/{draftId}/publish-diff`
+- `GET /drafts/{draftId}/snapshots`
+- `POST /drafts/{draftId}/offline`
+- `GET /drafts/{draftId}/tasks`
+- `GET /drafts/{draftId}/commands`
+- `GET /drafts/{draftId}/logs`
+- `GET /drafts/{draftId}/logs/timeline`
+- `GET /drafts/{draftId}/logs/publish-timeline`
 
-### 8.2 默认模式
-默认可以使用 H2 进行本地演示，不强依赖 Redis。
+### 恢复相关
 
-### 8.3 常见 Profile
-- 默认：H2，本地演示
-- `mysql`：切换 MySQL
-- `redis`：启用 Redis Cache
-- `rabbitmq`：启用 RabbitMQ 配置
-- `ops`：暴露更多 Actuator / Prometheus 端点
-- `loadtest`：压测配置
+- `GET /drafts/{draftId}/recovery/tasks`
+- `POST /drafts/{draftId}/tasks/{taskId}/manual-retry`
+- `POST /drafts/{draftId}/tasks/manual-retry-current-version`
+- `POST /drafts/{draftId}/tasks/{taskId}/manual-requeue`
+- `GET /outbox/events/recovery`
+- `POST /outbox/events/{outboxEventId}/manual-retry`
+- `POST /outbox/events/{outboxEventId}/manual-requeue`
 
-### 8.4 常见环境变量
-- `DB_URL`
-- `DB_USER`
-- `DB_PASSWORD`
-- `REDIS_HOST`
-- `REDIS_PORT`
-- `RABBIT_HOST`
-- `RABBIT_PORT`
-- `RABBIT_USER`
-- `RABBIT_PASSWORD`
-- `SERVER_PORT`
-- `MANAGEMENT_PORT`
+更详细的接口说明见 [docs/API_DESIGN.md](/D:/java/content-publish-workflow/docs/API_DESIGN.md)。
 
----
+## 八、权限模型
 
-## 9. 可观测性与运维接口
+项目实现的是一套轻量但完整的请求头权限模型，不是完整的账号系统。
 
-已接入：
+角色：
+
+- `EDITOR`
+- `REVIEWER`
+- `OPERATOR`
+- `ADMIN`
+
+请求头主要有：
+
+- `X-Workflow-Role`
+- `X-Workflow-Operator-Id`
+- `X-Workflow-Operator-Name`
+- `X-Request-Id`
+
+权限粒度已经细化到草稿读写、审核、发布、查看任务、查看命令、查看日志、人工恢复和 outbox 恢复，不再只是“按角色粗放拦截”。
+
+## 九、运行方式
+
+### 1. 默认最小启动
+
+默认使用 H2 内存库，并自动执行 `src/main/resources/sql/schema.sql`。这种模式适合：
+
+- 本地查看接口
+- 跑单元测试和持久化测试
+- 不依赖 MySQL、Redis、RabbitMQ 的快速演示
+
+### 2. 使用 MySQL
+
+启用 `mysql` profile 后：
+
+- 数据源切到 MySQL
+- `ddl-auto=validate`
+- 不再自动执行建表脚本
+- 需要先手动执行仓库根目录的 `sql/schema.sql`
+
+### 3. 使用 Redis
+
+启用 `redis` profile 后：
+
+- Spring Cache 使用 Redis
+- 就绪探针会把 Redis 作为依赖
+- 草稿详情、列表、状态统计等缓存使用可配置 TTL
+
+### 4. 使用 RabbitMQ
+
+启用 `rabbitmq` profile 后：
+
+- 开启 outbox 配置样例
+- 可以声明交换机、队列和绑定
+- relay 与 consumer 默认仍是关闭的，需要显式打开
+
+### 5. 运维与压测
+
+- `ops`：暴露更多 Actuator 端点，并建议使用独立管理端口
+- `loadtest`：调整 Tomcat 和监控参数，适合做压测演示
+- `xxl-job`：通过 XXL-Job 调度 worker 和扫描任务
+
+详细运行说明见 [docs/OPERATIONS.md](/D:/java/content-publish-workflow/docs/OPERATIONS.md)。
+
+## 十、数据库与缓存
+
+核心表如下：
+
+- `content_draft`
+- `content_review_record`
+- `content_publish_snapshot`
+- `content_publish_task`
+- `content_publish_command`
+- `content_publish_log`
+- `workflow_outbox_event`
+
+它们的职责不是简单分表，而是分别承载：
+
+- 当前工作副本
+- 审核历史
+- 不可变发布版本
+- 副作用任务
+- 发布幂等命令
+- 审计日志
+- 可靠消息中转
+
+缓存层目前重点优化的是读请求，而不是把整个业务做成“缓存优先”系统：
+
+- 草稿详情缓存
+- 草稿列表缓存
+- 草稿状态统计缓存
+- 消费防重缓存
+- 死信扫描标记缓存
+
+## 十一、可观测性与运维
+
+项目已经接入：
 
 - `/actuator/health`
 - `/actuator/health/liveness`
@@ -372,76 +385,53 @@ src/main/java/com/contentworkflow
 - `/actuator/metrics`
 - `/actuator/prometheus`
 
-并支持：
+启用 `ops` 后还可以看到更多运维端点，并可以配合：
 
-- outbox relay 轮询
-- 发布任务轮询
-- 死信任务扫描
-- 死信 outbox 扫描
-- XXL-Job 调度接入
+- `docs/observability/prometheus.yml`
+- `docs/observability/grafana-dashboard.json`
 
----
+用来演示服务监控、请求延迟、JVM 指标和线程池指标。
 
-## 10. 当前项目的面试价值
+## 十二、测试体系
 
-这个项目的价值不在于“接口数量多”，而在于它已经覆盖了真实后端系统中比较有代表性的几个点：
+测试分成两类：
 
-- 工作流状态机
-- 审核与发布解耦
-- 快照版本化
-- 回滚设计
-- 差异发布
-- 任务编排
-- Outbox 最终一致性
-- MQ 消费防重
-- 审计链路追踪
-- 人工恢复闭环
+- 以工作流规则为中心的应用层测试
+- 以 JPA 持久化契约为中心的仓储层测试
 
-如果用于简历/面试，可以概括为：
+测试重点覆盖：
 
-> 实现了一个基于 Spring Boot 的内容发布工作流服务，围绕草稿、审核、发布、回滚构建状态机与版本快照模型，并基于 Outbox + RabbitMQ 实现异步副作用链路、消费防重、失败重试、死信与人工恢复，同时通过结构化审计日志支持发布全链路追踪。
+- 状态机流转
+- 错误码稳定性
+- 快照与版本语义
+- 幂等发布
+- 发布任务和恢复逻辑
+- 持久化映射
 
----
+详细说明见 [docs/TESTING.md](/D:/java/content-publish-workflow/docs/TESTING.md)。
 
-## 11. 当前未完全收口的部分
+## 十三、适合怎么讲这个项目
 
-以下内容已经有基础，但还不是最终完成态：
+如果这是你的课程项目、练手项目或面试项目，可以这样概括：
 
-- 权限模型仍是轻量版，请求头角色控制，未实现完整 RBAC
-- 审计体系已结构化，但还可以继续做统一审计上下文抽象
-- 搜索索引、读模型、通知服务仍为 stub
-- 压测与指标报告未完全补齐
-- 部分文档仍需继续回补
+“我实现了一个内容发布工作流后端服务，把草稿、审核、发布、版本快照、回滚、下线、任务编排、Outbox 最终一致性、人工恢复和结构化审计整合到同一个系统里。发布接口本身不直接做副作用，而是用任务和 outbox 把主事务与异步链路拆开，支持失败重试、死信和人工恢复。”
 
----
+## 十四、文档索引
 
-## 12. 后续规划
-
-下一阶段优先方向：
-
-1. 完善权限模型
-2. 继续增强统一审计体系
-3. 补更多人工补偿/恢复入口
-4. 接入真实外部下游系统
-5. 补齐压测与指标报告
-6. 完善文档
-
----
-
-## 13. 文档索引
-
-- `docs/SERVICE_ARCHITECTURE.md`：服务架构说明
-- `docs/OPERATIONS.md`：运行与运维说明
-- `docs/OUTBOX_RABBITMQ.md`：Outbox + RabbitMQ 设计
-- `docs/API_DESIGN.md`：接口设计说明
-- `docs/DOMAIN_MODEL.md`：领域模型说明
-- `docs/WORKFLOW_INVARIANTS.md`：工作流不变量
-- `docs/OBSERVABILITY.md`：可观测性说明
-- `docs/LOAD_TEST.md`：压测说明
-- `docs/FRONTEND_INTEGRATION.md`：前端联调说明
-
----
-
-## 14. 一句话总结
-
-当前项目已经完成内容发布工作流的核心业务主链路和大部分工程能力，包括状态机、版本快照、回滚、差异发布、发布任务编排、Outbox + RabbitMQ 异步副作用链路、消费防重、消费审计以及 XXL-Job 调度接入；后续重点继续补权限模型、更完整审计体系、真实下游集成，以及压测与指标收尾。
+- [docs/SERVICE_ARCHITECTURE.md](/D:/java/content-publish-workflow/docs/SERVICE_ARCHITECTURE.md)：系统分层、核心流程和组件关系
+- [docs/API_DESIGN.md](/D:/java/content-publish-workflow/docs/API_DESIGN.md)：接口、请求头、权限和典型调用方式
+- [docs/DOMAIN_MODEL.md](/D:/java/content-publish-workflow/docs/DOMAIN_MODEL.md)：领域模型、状态机、版本语义
+- [docs/WORKFLOW_INVARIANTS.md](/D:/java/content-publish-workflow/docs/WORKFLOW_INVARIANTS.md)：工作流不变量与约束
+- [docs/TABLE_DESIGN.md](/D:/java/content-publish-workflow/docs/TABLE_DESIGN.md)：核心表设计
+- [docs/SQL_GUIDE.md](/D:/java/content-publish-workflow/docs/SQL_GUIDE.md)：建表、导数和本地 SQL 使用说明
+- [docs/OPERATIONS.md](/D:/java/content-publish-workflow/docs/OPERATIONS.md)：运行、配置、profile 和排障
+- [docs/OUTBOX_RABBITMQ.md](/D:/java/content-publish-workflow/docs/OUTBOX_RABBITMQ.md)：Outbox 与 RabbitMQ 链路说明
+- [docs/REDIS_CACHE.md](/D:/java/content-publish-workflow/docs/REDIS_CACHE.md)：缓存设计
+- [docs/REDIS_GUIDE.md](/D:/java/content-publish-workflow/docs/REDIS_GUIDE.md)：Redis 启用方式与联调说明
+- [docs/OBSERVABILITY.md](/D:/java/content-publish-workflow/docs/OBSERVABILITY.md)：监控指标与日志
+- [docs/LOAD_TEST.md](/D:/java/content-publish-workflow/docs/LOAD_TEST.md)：压测资产和压测方法
+- [docs/TESTING.md](/D:/java/content-publish-workflow/docs/TESTING.md)：测试说明
+- [docs/FRONTEND_INTEGRATION.md](/D:/java/content-publish-workflow/docs/FRONTEND_INTEGRATION.md)：前后端联调说明
+- [docs/ERROR_CODES.md](/D:/java/content-publish-workflow/docs/ERROR_CODES.md)：错误码说明
+- [docs/PRD.md](/D:/java/content-publish-workflow/docs/PRD.md)：项目目标与范围
+- [docs/ROADMAP.md](/D:/java/content-publish-workflow/docs/ROADMAP.md)：后续演进方向

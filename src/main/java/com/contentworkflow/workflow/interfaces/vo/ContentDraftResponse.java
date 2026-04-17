@@ -16,6 +16,7 @@ public record ContentDraftResponse(
         String body,
         Integer draftVersion,
         Integer publishedVersion,
+        Long version,
         WorkflowStatus status,
         Long currentSnapshotId,
         String lastReviewComment,

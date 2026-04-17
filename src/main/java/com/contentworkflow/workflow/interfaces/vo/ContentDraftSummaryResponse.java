@@ -14,6 +14,7 @@ public record ContentDraftSummaryResponse(
         String summary,
         Integer draftVersion,
         Integer publishedVersion,
+        Long version,
         WorkflowStatus status,
         Long currentSnapshotId,
         String lastReviewComment,
@@ -22,4 +23,3 @@ public record ContentDraftSummaryResponse(
         WorkflowActionResponse actions
 ) {
 }
-

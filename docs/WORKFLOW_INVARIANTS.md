@@ -1,46 +1,137 @@
-# Workflow Invariants
+# 工作流不变量说明
 
-This project is intentionally modeled as a workflow system. The important part is not the tech stack,
-but the invariants we enforce under real-world usage (retries, bad releases, audits).
+这份文档描述系统运行时必须长期成立的规则。它们比某个接口的具体实现更重要，因为只要这些不变量被破坏，整个工作流就会失去可预测性。
 
-## State Machine Rules (V1)
+## 一、状态流转不变量
 
-Allowed transitions:
-- `DRAFT` -> `REVIEWING` via submit-review
-- `REVIEWING` -> `APPROVED` via approve
-- `REVIEWING` -> `REJECTED` via reject (sets `lastReviewComment`)
-- `REJECTED` -> `DRAFT` via edit (increments `draftVersion`)
-- `APPROVED` -> `PUBLISHED` via publish (creates snapshot + tasks)
-- `PUBLISHED` -> `PUBLISHED` via rollback (creates a new snapshot version)
+### 1. 草稿不能跳过审核直接发布
 
-Notable restrictions:
-- You cannot publish without approval.
-- You cannot review content that is not in `REVIEWING`.
-- Editing is only allowed when the content is not under review (implementation allows `DRAFT`, `REJECTED`, `OFFLINE`).
+发布前必须处于允许发布的状态，不能从任意状态直接进入发布。
 
-## Versioning Semantics
+### 2. 审核动作只能发生在审核中
 
-- `draftVersion` is for editor-side evolution. It increments on each edit.
-- `publishedVersion` is for operator-side releases. It increments on each publish or rollback.
-- A rollback does not mutate history. It creates a new published version whose content is copied from a previous snapshot.
+只有 `REVIEWING` 状态的草稿才能执行审核通过或审核驳回。
 
-## Snapshot Guarantees
+### 3. 编辑动作不能破坏审核语义
 
-- Each `(draftId, publishedVersion)` has exactly one snapshot.
-- Snapshots are immutable and represent the released content at that version.
-- `sourceDraftVersion` enables tracing: "which draft version produced this release".
+编辑操作应该只发生在允许编辑的状态，不应在审核中直接篡改内容。
 
-## Publish Task Guarantees (Planned)
+### 4. 发布中不是终态
 
-Publish is separated into core data changes and side-effect tasks.
-The schema supports idempotent task creation by key `(draftId, publishedVersion, taskType)`.
+`PUBLISHING` 表示主事务已完成，但副作用尚未全部完成，不代表发布已经真正结束。
 
-## Error Codes (Current)
+### 5. 失败发布可以恢复，但恢复必须受限
 
-The in-memory implementation uses `BusinessException(code, message)`:
-- `DRAFT_NOT_FOUND`: draft id does not exist
-- `INVALID_WORKFLOW_STATE`: action not allowed in current state
-- `SNAPSHOT_NOT_FOUND`: rollback target version missing
+恢复只允许针对当前 `publishedVersion` 的失败任务，不能把历史失败任务随意重放。
 
-These codes are intentionally stable to support API clients.
+## 二、版本不变量
 
+### 1. 草稿版本和发布版本必须分离
+
+- `draftVersion` 表示编辑侧版本
+- `publishedVersion` 表示发布侧版本
+
+不能把这两个概念混成一个字段。
+
+### 2. 快照必须不可变
+
+一旦快照生成，就不能被后续编辑覆盖。
+
+### 3. 回滚不能篡改历史
+
+回滚必须生成新的发布版本，而不是直接修改旧快照。
+
+## 三、任务不变量
+
+### 1. 同一次发布中，同一任务类型只能有一条任务
+
+这由 `(draftId, publishedVersion, taskType)` 唯一约束保证。
+
+### 2. 任务状态必须单向推进
+
+常规推进路径是：
+
+- `PENDING`
+- `RUNNING`
+- `SUCCESS`
+
+失败时是：
+
+- `PENDING`
+- `RUNNING`
+- `FAILED`
+- 或 `DEAD`
+
+人工恢复时才允许从 `FAILED` / `DEAD` 回到 `PENDING`。
+
+### 3. 任务锁必须可回收
+
+如果任务被 worker 锁住太久，系统必须能够基于锁超时重新领取它。
+
+## 四、Outbox 不变量
+
+### 1. 业务数据与 outbox 事件必须在同一主事务里落库
+
+否则就无法保证最终一致性。
+
+### 2. 同一 outbox 事件必须有稳定事件标识
+
+这样消费端才能做去重。
+
+### 3. Outbox 恢复只能针对失败或死信事件
+
+不能随意把已经发送成功的事件重新置回待发送。
+
+## 五、审计不变量
+
+### 1. 关键动作必须留下结构化日志
+
+至少应覆盖：
+
+- 创建草稿
+- 更新草稿
+- 提交审核
+- 审核通过/驳回
+- 发布
+- 回滚
+- 下线
+- 任务执行
+- 恢复动作
+
+### 2. 时间线必须可追踪
+
+一次发布链路应当能够通过：
+
+- `traceId`
+- `publishedVersion`
+
+被还原出来。
+
+## 六、恢复不变量
+
+### 1. 恢复动作必须记录审计
+
+恢复不是“悄悄改状态”，而是正式业务动作，必须留痕。
+
+### 2. 恢复不能跨版本误操作
+
+当前项目显式限制只能恢复当前发布版本的任务，这是非常重要的边界。
+
+### 3. 恢复必须清理失败上下文
+
+例如：
+
+- 清空错误信息
+- 清空锁定信息
+- 重置重试计数
+
+## 七、为什么这些不变量重要
+
+因为项目真正要表达的，不是“接口能返回 200”，而是：
+
+- 系统能否在失败和重试中保持一致
+- 历史是否可追溯
+- 恢复是否受控
+- 发布链路是否可解释
+
+这些不变量一旦被破坏，整个系统虽然看起来还能跑，但已经很难继续演进和排障。

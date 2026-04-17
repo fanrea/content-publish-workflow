@@ -45,7 +45,7 @@ class ContentWorkflowHistoryTest {
         // Make sure timestamps differ so sorting by reviewedAt is deterministic.
         Thread.sleep(30);
 
-        service.updateDraft(id, new UpdateDraftRequest("t2", "s2", "b2"));
+        service.updateDraft(id, new UpdateDraftRequest(service.getDraft(id).version(), "t2", "s2", "b2"));
         service.submitReview(id, new SubmitReviewRequest("editor", "v2"));
         service.review(id, new ReviewDecisionRequest("reviewer", ReviewDecision.APPROVE, "ok"));
 
@@ -57,4 +57,3 @@ class ContentWorkflowHistoryTest {
         assertEquals(1, records.get(1).draftVersion());
     }
 }
-

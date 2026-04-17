@@ -1,58 +1,79 @@
-# PRD
+# 项目目标说明
 
-## Problem Statement
-Most training-style projects stop at simple content CRUD and "publish/unpublish". Real content platforms need stronger workflow guarantees:
-- a draft cannot be published without review
-- operators need review comments and audit history
-- every published version must be traceable
-- bad releases must be rolled back quickly
-- publish side effects should be explicit and retryable
+这份文档不是产品商业 PRD，而是当前项目的目标边界说明，用来明确这个系统要解决什么问题，不解决什么问题。
 
-This project solves that gap by building a dedicated content publish workflow platform.
+## 一、项目目标
 
-## Target Users
-- Content editor: creates and updates drafts
-- Reviewer: approves or rejects content
-- Operator: triggers publish, offline, rollback
-- Auditor: checks review and publish history
+本项目要实现的是一个内容发布工作流后端服务，重点覆盖：
 
-## Core Business Scenarios
-### Scenario A: Normal release
-1. Editor creates draft
-2. Editor updates content
-3. Editor submits review
-4. Reviewer approves
-5. Operator publishes
-6. System creates version snapshot and publish tasks
+- 草稿创建与编辑
+- 审核流程
+- 发布流程
+- 版本快照
+- 回滚
+- 下线
+- 副作用任务编排
+- Outbox 最终一致性
+- 人工恢复
+- 结构化审计
 
-### Scenario B: Rejected content
-1. Draft enters review
-2. Reviewer rejects with comment
-3. Editor modifies draft
-4. Editor resubmits review
+## 二、核心价值
 
-### Scenario C: Bad release rollback
-1. Version N is already published
-2. Operator detects content issue
-3. Operator selects version N-1
-4. System creates rollback release based on previous snapshot
+项目的核心价值不在于做一个内容管理平台，而在于把内容发布这条链路做成一个具备工程表达力的系统。
 
-## Scope
-### In Scope
-- draft management
-- workflow status management
-- review submission and decision
-- publish action
-- publish snapshot
-- rollback based on snapshot
-- review history query
-- snapshot history query
-- publish task model
+它希望体现的能力包括：
 
-### Out of Scope For V1
-- role-based permission system
-- search index integration
-- MQ integration
-- asynchronous worker execution
-- full MySQL persistence implementation
-- frontend UI
+- 工作流状态机建模
+- 版本管理
+- 幂等设计
+- 异步任务编排
+- 可靠消息交付
+- 失败恢复
+- 权限与审计
+
+## 三、目标用户
+
+从系统角色看，目标用户包括：
+
+- 编辑
+- 审核人
+- 发布操作人
+- 管理员 / 运维
+
+## 四、当前范围内的功能
+
+当前范围内已经实现或明确支持的内容：
+
+- 草稿管理
+- 审核流
+- 发布与回滚
+- 发布差异分析
+- 发布任务执行
+- Outbox 与 RabbitMQ 接缝
+- 人工恢复入口
+- 日志时间线查询
+- 可观测性基础资产
+
+## 五、不在当前范围内的内容
+
+当前项目不打算覆盖：
+
+- 完整用户体系
+- 完整 RBAC 平台
+- 真正的内容渲染前端
+- 真正的外部搜索/通知/读模型系统实现
+- Flyway 迁移体系
+- 多租户能力
+
+这些能力以后可以扩展，但不是当前项目核心。
+
+## 六、验收标准
+
+如果把这个项目当成一个阶段性成品，当前的验收标准大致是：
+
+- 能完整跑通草稿到发布链路
+- 能产生快照与发布任务
+- 能在失败后支持人工恢复
+- 能查询任务、命令、日志和发布时间线
+- 能在 H2 模式和 MySQL 模式下运行
+- 能说明清楚为什么要这样分层和拆表

@@ -4,6 +4,7 @@ import com.contentworkflow.common.api.PageResponse;
 import com.contentworkflow.common.exception.BusinessException;
 import com.contentworkflow.common.web.auth.WorkflowOperatorIdentity;
 import com.contentworkflow.workflow.application.store.InMemoryWorkflowStore;
+import com.contentworkflow.workflow.application.store.DraftOperationLockEntry;
 import com.contentworkflow.workflow.application.store.PublishCommandEntry;
 import com.contentworkflow.workflow.application.store.PublishLogEntry;
 import com.contentworkflow.workflow.application.store.WorkflowStore;
@@ -18,6 +19,7 @@ import com.contentworkflow.workflow.domain.enums.PublishChangeScope;
 import com.contentworkflow.workflow.domain.enums.PublishTaskStatus;
 import com.contentworkflow.workflow.domain.enums.PublishTaskType;
 import com.contentworkflow.workflow.domain.enums.ReviewDecision;
+import com.contentworkflow.workflow.domain.enums.DraftOperationType;
 import com.contentworkflow.workflow.domain.enums.WorkflowStatus;
 import com.contentworkflow.workflow.interfaces.dto.CreateDraftRequest;
 import com.contentworkflow.workflow.interfaces.dto.DraftQueryRequest;
@@ -89,6 +91,9 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
 
     @Value("${workflow.demo.seedDraft:false}")
     private boolean seedDraft;
+
+    @Value("${workflow.draft.operationLockSeconds:1800}")
+    private int draftOperationLockSeconds;
 
     /**
      * 处理 init 相关逻辑，并返回对应的执行结果。
@@ -299,6 +304,7 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
     public ContentDraftResponse updateDraft(Long draftId, UpdateDraftRequest request, WorkflowOperatorIdentity operator) {
         ContentDraft draft = requireDraft(draftId);
         WorkflowStatus beforeStatus = draft.getStatus();
+        ensureExpectedVersion(draft, request.expectedVersion());
         ensureState(draft, EnumSet.of(WorkflowStatus.DRAFT, WorkflowStatus.REJECTED, WorkflowStatus.OFFLINE),
                 "draft can only be edited in DRAFT, REJECTED or OFFLINE state");
         draft.setTitle(request.title());
@@ -308,7 +314,7 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         draft.setStatus(WorkflowStatus.DRAFT);
         draft.setLastReviewComment(null);
         draft.setUpdatedAt(LocalDateTime.now());
-        store.updateDraft(draft);
+        draft = persistDraft(draft, EnumSet.of(WorkflowStatus.DRAFT, WorkflowStatus.REJECTED, WorkflowStatus.OFFLINE));
         store.insertPublishLog(WorkflowAuditLogFactory.operatorAction(draftId, "DRAFT_UPDATED", operator)
                 .targetType(WorkflowAuditTargetType.CONTENT_DRAFT)
                 .targetId(draftId)
@@ -366,7 +372,7 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
                 "only DRAFT, REJECTED or OFFLINE content can be submitted for review");
         draft.setStatus(WorkflowStatus.REVIEWING);
         draft.setUpdatedAt(LocalDateTime.now());
-        store.updateDraft(draft);
+        draft = persistDraft(draft, EnumSet.of(WorkflowStatus.DRAFT, WorkflowStatus.REJECTED, WorkflowStatus.OFFLINE));
         store.insertPublishLog(WorkflowAuditLogFactory.operatorAction(draftId, "REVIEW_SUBMITTED", operator)
                 .targetType(WorkflowAuditTargetType.CONTENT_DRAFT)
                 .targetId(draftId)
@@ -447,7 +453,7 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         }
 
         draft.setUpdatedAt(now);
-        store.updateDraft(draft);
+        draft = persistDraft(draft, EnumSet.of(WorkflowStatus.REVIEWING));
         return toDraftResponse(draft);
     }
 
@@ -481,6 +487,9 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
         WorkflowStatus beforeStatus = draft.getStatus();
         String idempotencyKey = normalizeIdempotencyKey(request.idempotencyKey());
         PublishDiffContext diff = loadPublishDiff(draft, null);
+        boolean commandCreated = false;
+        boolean enteredPublishing = false;
+        Long snapshotId = null;
 
         if (idempotencyKey != null) {
             // Idempotent replays must not create duplicate snapshots or publish tasks.
@@ -503,37 +512,42 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
 
         LocalDateTime now = LocalDateTime.now();
         int targetPublishedVersion = safeInt(draft.getPublishedVersion()) + 1;
-        if (idempotencyKey != null) {
-            boolean created = store.tryCreatePublishCommand(PublishCommandEntry.builder()
-                    .draftId(draftId)
-                    .commandType(COMMAND_TYPE_PUBLISH)
-                    .idempotencyKey(idempotencyKey)
-                    .operatorName(operator.operatorName())
-                    .remark(request.remark())
-                    .status(CMD_STATUS_IN_PROGRESS)
-                    .targetPublishedVersion(targetPublishedVersion)
-                    .createdAt(now)
-                    .updatedAt(now)
-                    .build());
-            if (!created) {
-                // Concurrent insertion may have won the race; fall back to the existing command record.
-                PublishCommandEntry cmd = store.findPublishCommand(draftId, COMMAND_TYPE_PUBLISH, idempotencyKey).orElse(null);
-                if (cmd != null && CMD_STATUS_FAILED.equals(cmd.getStatus())) {
-                    throw new BusinessException("PUBLISH_COMMAND_FAILED",
-                            "previous publish command failed: " + safeString(cmd.getErrorMessage()));
-                }
-                if (cmd != null) {
-                    ensureIdempotencyKeyNotReusedForDifferentPayload(draft, cmd);
-                }
-                return toDraftResponse(draft);
-            }
-        }
-
-        draft.setStatus(WorkflowStatus.PUBLISHING);
-        draft.setUpdatedAt(now);
-        store.updateDraft(draft);
-
+        acquireDraftOperationLock(draftId, DraftOperationType.PUBLISH, targetPublishedVersion, operator.operatorName(), now);
+        boolean tasksCreated = false;
         try {
+            if (idempotencyKey != null) {
+                boolean created = store.tryCreatePublishCommand(PublishCommandEntry.builder()
+                        .draftId(draftId)
+                        .commandType(COMMAND_TYPE_PUBLISH)
+                        .idempotencyKey(idempotencyKey)
+                        .operatorName(operator.operatorName())
+                        .remark(request.remark())
+                        .status(CMD_STATUS_IN_PROGRESS)
+                        .targetPublishedVersion(targetPublishedVersion)
+                        .createdAt(now)
+                        .updatedAt(now)
+                        .build());
+                if (!created) {
+                    // Concurrent insertion may have won the race; fall back to the existing command record.
+                    PublishCommandEntry cmd = store.findPublishCommand(draftId, COMMAND_TYPE_PUBLISH, idempotencyKey).orElse(null);
+                    if (cmd != null && CMD_STATUS_FAILED.equals(cmd.getStatus())) {
+                        throw new BusinessException("PUBLISH_COMMAND_FAILED",
+                                "previous publish command failed: " + safeString(cmd.getErrorMessage()));
+                    }
+                    if (cmd != null) {
+                        ensureIdempotencyKeyNotReusedForDifferentPayload(draft, cmd);
+                    }
+                    releaseDraftOperationLockQuietly(draftId, targetPublishedVersion);
+                    return toDraftResponse(draft);
+                }
+                commandCreated = true;
+            }
+
+            draft.setStatus(WorkflowStatus.PUBLISHING);
+            draft.setUpdatedAt(now);
+            draft = persistDraft(draft, EnumSet.of(WorkflowStatus.APPROVED, WorkflowStatus.PUBLISH_FAILED));
+            enteredPublishing = true;
+
             int nextPublishedVersion = targetPublishedVersion;
             ContentSnapshot snapshot = ContentSnapshot.builder()
                     .draftId(draftId)
@@ -547,6 +561,7 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
                     .publishedAt(now)
                     .build();
             snapshot = store.insertSnapshot(snapshot);
+            snapshotId = snapshot.getId();
 
             EnumSet<PublishTaskType> taskTypes = resolvePublishTaskTypes(diff);
             List<PublishTask> tasks = new ArrayList<>(taskTypes.size());
@@ -564,12 +579,13 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
                         .build());
             }
             store.insertPublishTasks(tasks);
+            tasksCreated = true;
 
             draft.setPublishedVersion(nextPublishedVersion);
             draft.setCurrentSnapshotId(snapshot.getId());
             // Final completion depends on async task execution: SUCCESS => PUBLISHED, unrecoverable failure => PUBLISH_FAILED.
             draft.setUpdatedAt(now);
-            store.updateDraft(draft);
+            draft = persistDraft(draft, EnumSet.of(WorkflowStatus.PUBLISHING));
 
             if (idempotencyKey != null) {
                 store.updatePublishCommand(PublishCommandEntry.builder()
@@ -597,33 +613,33 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
             return toDraftResponse(draft);
         } catch (RuntimeException e) {
             LocalDateTime failAt = LocalDateTime.now();
-            draft.setStatus(WorkflowStatus.PUBLISH_FAILED);
-            draft.setUpdatedAt(failAt);
-            store.updateDraft(draft);
-
-            if (idempotencyKey != null) {
-                store.updatePublishCommand(PublishCommandEntry.builder()
-                        .draftId(draftId)
-                        .commandType(COMMAND_TYPE_PUBLISH)
-                        .idempotencyKey(idempotencyKey)
-                        .operatorName(operator.operatorName())
-                        .remark(request.remark())
-                        .status(CMD_STATUS_FAILED)
-                        .targetPublishedVersion(targetPublishedVersion)
-                        .snapshotId(draft.getCurrentSnapshotId())
-                        .errorMessage(e.getMessage())
-                        .updatedAt(failAt)
-                        .build());
+            if (enteredPublishing) {
+                draft = transitionToPublishFailed(
+                        draftId,
+                        targetPublishedVersion,
+                        operator,
+                        draft,
+                        failAt,
+                        e.getMessage(),
+                        "PUBLISH_REQUEST_FAILED"
+                );
             }
-            store.insertPublishLog(WorkflowAuditLogFactory.publishAction(draftId, targetPublishedVersion, "PUBLISH_FAILED", operator)
-                    .beforeStatus(WorkflowStatus.PUBLISHING.name())
-                    .afterStatus(WorkflowStatus.PUBLISH_FAILED.name())
-                    .result(WorkflowAuditResult.FAILED)
-                    .errorCode("PUBLISH_REQUEST_FAILED")
-                    .errorMessage(e.getMessage())
-                    .remark(e.getMessage())
-                    .createdAt(failAt)
-                    .build());
+            if (!tasksCreated) {
+                releaseDraftOperationLockQuietly(draftId, targetPublishedVersion);
+            }
+
+            if (commandCreated) {
+                updatePublishCommandAsFailed(
+                        draftId,
+                        idempotencyKey,
+                        operator,
+                        request.remark(),
+                        targetPublishedVersion,
+                        snapshotId != null ? snapshotId : draft.getCurrentSnapshotId(),
+                        e.getMessage(),
+                        failAt
+                );
+            }
             throw e;
         }
     }
@@ -655,6 +671,7 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
     @Transactional
     public ContentDraftResponse rollback(Long draftId, RollbackRequest request, WorkflowOperatorIdentity operator) {
         ContentDraft draft = requireDraft(draftId);
+        WorkflowStatus beforeStatus = draft.getStatus();
         ensureState(draft, EnumSet.of(WorkflowStatus.PUBLISHED, WorkflowStatus.OFFLINE),
                 "only PUBLISHED or OFFLINE content can rollback");
 
@@ -665,57 +682,81 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
                 .orElseThrow(() -> new BusinessException("SNAPSHOT_NOT_FOUND", "target published version not found"));
 
         LocalDateTime now = LocalDateTime.now();
-        draft.setStatus(WorkflowStatus.PUBLISHING);
-        draft.setUpdatedAt(now);
-        store.updateDraft(draft);
-
         int nextPublishedVersion = draft.getPublishedVersion() + 1;
-        ContentSnapshot rollbackSnapshot = ContentSnapshot.builder()
-                .draftId(draftId)
-                .publishedVersion(nextPublishedVersion)
-                .sourceDraftVersion(draft.getDraftVersion())
-                .title(target.getTitle())
-                .summary(target.getSummary())
-                .body(target.getBody())
-                .operator(operator.operatorName())
-                .rollback(true)
-                .publishedAt(now)
-                .build();
-        rollbackSnapshot = store.insertSnapshot(rollbackSnapshot);
+        acquireDraftOperationLock(draftId, DraftOperationType.ROLLBACK, nextPublishedVersion, operator.operatorName(), now);
+        boolean enteredPublishing = false;
+        boolean tasksCreated = false;
 
-        List<PublishTask> tasks = new ArrayList<>();
-        for (PublishTaskType taskType : PublishTaskType.values()) {
-            tasks.add(PublishTask.builder()
+        try {
+            draft.setStatus(WorkflowStatus.PUBLISHING);
+            draft.setUpdatedAt(now);
+            draft = persistDraft(draft, EnumSet.of(WorkflowStatus.PUBLISHED, WorkflowStatus.OFFLINE));
+            enteredPublishing = true;
+
+            ContentSnapshot rollbackSnapshot = ContentSnapshot.builder()
                     .draftId(draftId)
                     .publishedVersion(nextPublishedVersion)
-                    .taskType(taskType)
-                    .status(PublishTaskStatus.PENDING)
-                    .retryTimes(0)
-                    .nextRunAt(now)
+                    .sourceDraftVersion(draft.getDraftVersion())
+                    .title(target.getTitle())
+                    .summary(target.getSummary())
+                    .body(target.getBody())
+                    .operator(operator.operatorName())
+                    .rollback(true)
+                    .publishedAt(now)
+                    .build();
+            rollbackSnapshot = store.insertSnapshot(rollbackSnapshot);
+
+            List<PublishTask> tasks = new ArrayList<>();
+            for (PublishTaskType taskType : PublishTaskType.values()) {
+                tasks.add(PublishTask.builder()
+                        .draftId(draftId)
+                        .publishedVersion(nextPublishedVersion)
+                        .taskType(taskType)
+                        .status(PublishTaskStatus.PENDING)
+                        .retryTimes(0)
+                        .nextRunAt(now)
+                        .createdAt(now)
+                        .updatedAt(now)
+                        .build());
+            }
+            store.insertPublishTasks(tasks);
+            tasksCreated = true;
+
+            draft.setTitle(target.getTitle());
+            draft.setSummary(target.getSummary());
+            draft.setBody(target.getBody());
+            draft.setPublishedVersion(nextPublishedVersion);
+            draft.setCurrentSnapshotId(rollbackSnapshot.getId());
+            draft.setStatus(WorkflowStatus.PUBLISHING);
+            // Rollback reuses publish task orchestration and returns to PUBLISHING until tasks complete.
+            draft.setUpdatedAt(now);
+            draft = persistDraft(draft, EnumSet.of(WorkflowStatus.PUBLISHING));
+
+            store.insertPublishLog(WorkflowAuditLogFactory.publishAction(draftId, nextPublishedVersion, "ROLLBACK_REQUESTED", operator)
+                    .beforeStatus(beforeStatus.name())
+                    .afterStatus(WorkflowStatus.PUBLISHING.name())
+                    .result(WorkflowAuditResult.ACCEPTED)
+                    .remark(request.reason())
                     .createdAt(now)
-                    .updatedAt(now)
                     .build());
+            return toDraftResponse(draft);
+        } catch (RuntimeException e) {
+            if (!tasksCreated) {
+                releaseDraftOperationLockQuietly(draftId, nextPublishedVersion);
+            }
+            if (enteredPublishing) {
+                transitionToPublishFailed(
+                        draftId,
+                        nextPublishedVersion,
+                        operator,
+                        draft,
+                        LocalDateTime.now(),
+                        e.getMessage(),
+                        "ROLLBACK_REQUEST_FAILED"
+                );
+            }
+            throw e;
         }
-        store.insertPublishTasks(tasks);
-
-        draft.setTitle(target.getTitle());
-        draft.setSummary(target.getSummary());
-        draft.setBody(target.getBody());
-        draft.setPublishedVersion(nextPublishedVersion);
-        draft.setCurrentSnapshotId(rollbackSnapshot.getId());
-        draft.setStatus(WorkflowStatus.PUBLISHING);
-        // Rollback reuses publish task orchestration and returns to PUBLISHING until tasks complete.
-        draft.setUpdatedAt(now);
-        store.updateDraft(draft);
-
-        store.insertPublishLog(WorkflowAuditLogFactory.publishAction(draftId, nextPublishedVersion, "ROLLBACK_REQUESTED", operator)
-                .beforeStatus(WorkflowStatus.PUBLISHED.name())
-                .afterStatus(WorkflowStatus.PUBLISHING.name())
-                .result(WorkflowAuditResult.ACCEPTED)
-                .remark(request.reason())
-                .createdAt(now)
-                .build());
-        return toDraftResponse(draft);
     }
 
     /**
@@ -787,11 +828,124 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
      * @param message 提示信息
      */
 
-    private void ensureState(ContentDraft draft, EnumSet<WorkflowStatus> allowedStates, String message) {
-        if (!allowedStates.contains(draft.getStatus())) {
-            throw new BusinessException("INVALID_WORKFLOW_STATE", message + ", current state: " + draft.getStatus());
-        }
+private void ensureState(ContentDraft draft, EnumSet<WorkflowStatus> allowedStates, String message) {
+    if (!allowedStates.contains(draft.getStatus())) {
+        throw new BusinessException("INVALID_WORKFLOW_STATE", message + ", current state: " + draft.getStatus());
     }
+}
+
+private void ensureExpectedVersion(ContentDraft draft, Long expectedVersion) {
+    if (expectedVersion == null) {
+        throw new BusinessException("VERSION_REQUIRED", "expectedVersion is required for draft updates");
+    }
+    if (!Objects.equals(draft.getVersion(), expectedVersion)) {
+        throw new BusinessException(
+                "CONCURRENT_MODIFICATION",
+                "draft changed concurrently, expectedVersion=" + expectedVersion + ", actualVersion=" + draft.getVersion()
+        );
+    }
+}
+
+private ContentDraft persistDraft(ContentDraft draft, EnumSet<WorkflowStatus> expectedStatuses) {
+    return store.updateDraft(draft, expectedStatuses);
+}
+
+private void acquireDraftOperationLock(Long draftId,
+                                       DraftOperationType operationType,
+                                       Integer targetPublishedVersion,
+                                       String lockedBy,
+                                       LocalDateTime now) {
+    DraftOperationLockEntry lockEntry = DraftOperationLockEntry.builder()
+            .draftId(draftId)
+            .operationType(operationType)
+            .targetPublishedVersion(targetPublishedVersion)
+            .lockedBy(lockedBy == null || lockedBy.isBlank() ? "system" : lockedBy)
+            .lockedAt(now)
+            .expiresAt(now.plusSeconds(Math.max(60, draftOperationLockSeconds)))
+            .build();
+    if (store.tryAcquireDraftOperationLock(lockEntry, now)) {
+        return;
+    }
+    DraftOperationLockEntry current = store.findDraftOperationLock(draftId).orElse(null);
+    throw draftOperationInProgress(draftId, current);
+}
+
+private void releaseDraftOperationLockQuietly(Long draftId, Integer targetPublishedVersion) {
+    try {
+        store.releaseDraftOperationLock(draftId, targetPublishedVersion);
+    } catch (RuntimeException ignored) {
+        // Best-effort release; the lease expiry remains as a safety net.
+    }
+}
+
+private BusinessException draftOperationInProgress(Long draftId, DraftOperationLockEntry current) {
+    String detail = current == null
+            ? "another draft operation is already in progress"
+            : "operationType=" + current.getOperationType()
+            + ", targetPublishedVersion=" + current.getTargetPublishedVersion()
+            + ", lockedBy=" + current.getLockedBy()
+            + ", expiresAt=" + current.getExpiresAt();
+    return new BusinessException(
+            "DRAFT_OPERATION_IN_PROGRESS",
+            "draft operation is locked, draftId=" + draftId + ", " + detail
+    );
+}
+
+private ContentDraft transitionToPublishFailed(Long draftId,
+                                               Integer publishedVersion,
+                                               WorkflowOperatorIdentity operator,
+                                               ContentDraft draft,
+                                               LocalDateTime failedAt,
+                                               String errorMessage,
+                                               String errorCode) {
+    draft.setStatus(WorkflowStatus.PUBLISH_FAILED);
+    draft.setUpdatedAt(failedAt);
+    try {
+        ContentDraft failedDraft = persistDraft(draft, EnumSet.of(WorkflowStatus.PUBLISHING));
+        store.insertPublishLog(WorkflowAuditLogFactory.publishAction(draftId, publishedVersion, "PUBLISH_FAILED", operator)
+                .beforeStatus(WorkflowStatus.PUBLISHING.name())
+                .afterStatus(WorkflowStatus.PUBLISH_FAILED.name())
+                .result(WorkflowAuditResult.FAILED)
+                .errorCode(errorCode)
+                .errorMessage(errorMessage)
+                .remark(errorMessage)
+                .createdAt(failedAt)
+                .build());
+        return failedDraft;
+    } catch (BusinessException ex) {
+        if (!isConditionalTransitionConflict(ex)) {
+            throw ex;
+        }
+        return draft;
+    }
+}
+
+private boolean isConditionalTransitionConflict(BusinessException ex) {
+    return "CONCURRENT_MODIFICATION".equals(ex.getCode())
+            || "INVALID_WORKFLOW_STATE".equals(ex.getCode());
+}
+
+private void updatePublishCommandAsFailed(Long draftId,
+                                          String idempotencyKey,
+                                          WorkflowOperatorIdentity operator,
+                                          String remark,
+                                          Integer targetPublishedVersion,
+                                          Long snapshotId,
+                                          String errorMessage,
+                                          LocalDateTime failedAt) {
+    store.updatePublishCommand(PublishCommandEntry.builder()
+            .draftId(draftId)
+            .commandType(COMMAND_TYPE_PUBLISH)
+            .idempotencyKey(idempotencyKey)
+            .operatorName(operator.operatorName())
+            .remark(remark)
+            .status(CMD_STATUS_FAILED)
+            .targetPublishedVersion(targetPublishedVersion)
+            .snapshotId(snapshotId)
+            .errorMessage(errorMessage)
+            .updatedAt(failedAt)
+            .build());
+}
 
     /**
      * 处理 to draft response 相关逻辑，并返回对应的执行结果。
@@ -809,6 +963,7 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
                 draft.getBody(),
                 draft.getDraftVersion(),
                 draft.getPublishedVersion(),
+                draft.getVersion(),
                 draft.getStatus(),
                 draft.getCurrentSnapshotId(),
                 draft.getLastReviewComment(),
@@ -832,6 +987,7 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
                 draft.getSummary(),
                 draft.getDraftVersion(),
                 draft.getPublishedVersion(),
+                draft.getVersion(),
                 draft.getStatus(),
                 draft.getCurrentSnapshotId(),
                 draft.getLastReviewComment(),
@@ -1475,19 +1631,24 @@ public ContentDraftResponse offline(Long draftId, OfflineRequest request, Workfl
     ensureState(draft, EnumSet.of(WorkflowStatus.PUBLISHED),
             "only PUBLISHED content can be taken offline");
     LocalDateTime now = LocalDateTime.now();
-    draft.setStatus(WorkflowStatus.OFFLINE);
-    draft.setUpdatedAt(now);
-    store.updateDraft(draft);
-    store.insertPublishLog(WorkflowAuditLogFactory.operatorAction(draftId, "OFFLINE", operator)
-            .targetType(WorkflowAuditTargetType.CONTENT_DRAFT)
-            .targetId(draftId)
-            .beforeStatus(WorkflowStatus.PUBLISHED.name())
-            .afterStatus(WorkflowStatus.OFFLINE.name())
-            .result(WorkflowAuditResult.SUCCESS)
-            .remark(request.remark())
-            .createdAt(now)
-            .build());
-    return toDraftResponse(draft);
+    acquireDraftOperationLock(draftId, DraftOperationType.OFFLINE, null, operator.operatorName(), now);
+    try {
+        draft.setStatus(WorkflowStatus.OFFLINE);
+        draft.setUpdatedAt(now);
+        draft = persistDraft(draft, EnumSet.of(WorkflowStatus.PUBLISHED));
+        store.insertPublishLog(WorkflowAuditLogFactory.operatorAction(draftId, "OFFLINE", operator)
+                .targetType(WorkflowAuditTargetType.CONTENT_DRAFT)
+                .targetId(draftId)
+                .beforeStatus(WorkflowStatus.PUBLISHED.name())
+                .afterStatus(WorkflowStatus.OFFLINE.name())
+                .result(WorkflowAuditResult.SUCCESS)
+                .remark(request.remark())
+                .createdAt(now)
+                .build());
+        return toDraftResponse(draft);
+    } finally {
+        releaseDraftOperationLockQuietly(draftId, null);
+    }
 }
 
 /**

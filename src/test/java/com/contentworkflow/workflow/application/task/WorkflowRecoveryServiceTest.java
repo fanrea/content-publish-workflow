@@ -9,6 +9,7 @@ import com.contentworkflow.testing.BusinessExceptionAssertions;
 import com.contentworkflow.workflow.application.store.InMemoryWorkflowStore;
 import com.contentworkflow.workflow.domain.entity.ContentDraft;
 import com.contentworkflow.workflow.domain.entity.PublishTask;
+import com.contentworkflow.workflow.domain.enums.DraftOperationType;
 import com.contentworkflow.workflow.domain.enums.PublishTaskStatus;
 import com.contentworkflow.workflow.domain.enums.PublishTaskType;
 import com.contentworkflow.workflow.domain.enums.WorkflowRole;
@@ -99,6 +100,18 @@ class WorkflowRecoveryServiceTest {
                 () -> service.retryPublishTask(draft.getId(), staleTask.getId(), null, operator));
 
         BusinessExceptionAssertions.assertCode(ex, "STALE_PUBLISH_TASK");
+    }
+
+    @Test
+    void retryPublishTask_shouldAcquireOperationLockWhenMissing() {
+        ContentDraft draft = insertDraft(2, WorkflowStatus.PUBLISH_FAILED);
+        PublishTask task = insertTask(draft.getId(), 2, PublishTaskType.REFRESH_SEARCH_INDEX, PublishTaskStatus.FAILED, 2);
+
+        service.retryPublishTask(draft.getId(), task.getId(), "manual retry", operator);
+
+        var lock = store.findDraftOperationLock(draft.getId()).orElseThrow();
+        assertEquals(DraftOperationType.PUBLISH, lock.getOperationType());
+        assertEquals(2, lock.getTargetPublishedVersion());
     }
 
     /**

@@ -66,6 +66,7 @@ class InMemoryContentWorkflowServiceTest {
         persisted.setStatus(WorkflowStatus.PUBLISHED);
         persisted.setUpdatedAt(LocalDateTime.now());
         store.updateDraft(persisted);
+        store.releaseDraftOperationLock(created.id(), 1);
 
         ContentDraftResponse rolledBack = service.rollback(created.id(), new RollbackRequest("operator-a", 1, "rollback check"));
         assertEquals(WorkflowStatus.PUBLISHING, rolledBack.status());
