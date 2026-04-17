@@ -19,15 +19,6 @@
     driver-class-name: ${DB_DRIVER:org.h2.Driver}
     username: ${DB_USER:sa}
     password: ${DB_PASSWORD:}
-  jpa:
-    open-in-view: false
-    defer-datasource-initialization: true
-    hibernate:
-      # 以 schema.sql 为准，避免自动建表把约束“悄悄改掉”。
-      ddl-auto: none
-    properties:
-      hibernate:
-        format_sql: true
   sql:
     init:
       # 默认只初始化嵌入式数据库；生产环境不自动执行建表脚本。
@@ -82,5 +73,11 @@ springdoc:
     path: /v3/api-docs
   swagger-ui:
     path: /swagger-ui
+
+mybatis:
+  mapper-locations: classpath*:mybatis/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    default-enum-type-handler: org.apache.ibatis.type.EnumTypeHandler
 
 

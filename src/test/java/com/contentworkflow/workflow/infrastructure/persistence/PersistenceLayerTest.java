@@ -1,64 +1,81 @@
 package com.contentworkflow.workflow.infrastructure.persistence;
 
+import com.contentworkflow.common.messaging.outbox.MybatisOutboxEventRepository;
+import com.contentworkflow.common.messaging.outbox.OutboxEventEntity;
+import com.contentworkflow.common.messaging.outbox.OutboxEventStatus;
 import com.contentworkflow.common.exception.BusinessException;
 import com.contentworkflow.workflow.application.store.DraftOperationLockEntry;
-import com.contentworkflow.workflow.application.store.JpaWorkflowStore;
+import com.contentworkflow.workflow.application.store.MybatisWorkflowStore;
 import com.contentworkflow.workflow.domain.enums.DraftOperationType;
 import com.contentworkflow.workflow.domain.enums.PublishTaskStatus;
 import com.contentworkflow.workflow.domain.enums.PublishTaskType;
 import com.contentworkflow.workflow.domain.enums.ReviewDecision;
 import com.contentworkflow.workflow.domain.enums.WorkflowStatus;
-import com.contentworkflow.workflow.infrastructure.persistence.entity.*;
-import com.contentworkflow.workflow.infrastructure.persistence.repository.*;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftJpaEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.ContentSnapshotJpaEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishCommandJpaEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishLogJpaEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishTaskJpaEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.entity.ReviewRecordJpaEntity;
+import com.contentworkflow.workflow.infrastructure.persistence.mybatis.ContentDraftMybatisMapper;
+import com.contentworkflow.workflow.infrastructure.persistence.mybatis.ContentSnapshotMybatisMapper;
+import com.contentworkflow.workflow.infrastructure.persistence.mybatis.DraftOperationLockMybatisMapper;
+import com.contentworkflow.workflow.infrastructure.persistence.mybatis.PublishCommandMybatisMapper;
+import com.contentworkflow.workflow.infrastructure.persistence.mybatis.PublishLogMybatisMapper;
+import com.contentworkflow.workflow.infrastructure.persistence.mybatis.PublishTaskMybatisMapper;
+import com.contentworkflow.workflow.infrastructure.persistence.mybatis.ReviewRecordMybatisMapper;
+import com.contentworkflow.workflow.interfaces.dto.DraftQueryRequest;
 import org.junit.jupiter.api.Test;
+import org.mybatis.spring.boot.test.autoconfigure.MybatisTest;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
+import org.springframework.context.annotation.Import;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.EnumSet;
+import java.util.List;
 
 import static com.contentworkflow.testing.BusinessExceptionAssertions.assertCode;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-/**
- * 测试类，用于验证当前模块在特定场景下的行为、状态变化或边界条件。
- */
-
-@DataJpaTest
+@MybatisTest
+@Import({MybatisWorkflowStore.class, MybatisOutboxEventRepository.class})
+@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.ANY)
 class PersistenceLayerTest {
 
     @Autowired
-    private ContentDraftJpaRepository draftRepo;
+    private ContentDraftMybatisMapper draftMapper;
 
     @Autowired
-    private ReviewRecordJpaRepository reviewRepo;
+    private ReviewRecordMybatisMapper reviewMapper;
 
     @Autowired
-    private ContentSnapshotJpaRepository snapshotRepo;
+    private ContentSnapshotMybatisMapper snapshotMapper;
 
     @Autowired
-    private PublishTaskJpaRepository taskRepo;
+    private PublishTaskMybatisMapper taskMapper;
 
     @Autowired
-    private PublishLogJpaRepository logRepo;
+    private PublishLogMybatisMapper logMapper;
 
     @Autowired
-    private PublishCommandJpaRepository commandRepo;
+    private PublishCommandMybatisMapper commandMapper;
 
     @Autowired
-    private DraftOperationLockJpaRepository operationLockRepo;
+    private DraftOperationLockMybatisMapper operationLockMapper;
 
     @Autowired
-    private jakarta.persistence.EntityManager entityManager;
+    private MybatisWorkflowStore store;
 
-    /**
-     * 处理 repositories_can persist and query 相关逻辑，并返回对应的执行结果。
-     */
+    @Autowired
+    private MybatisOutboxEventRepository outboxRepository;
 
     @Test
-    void repositories_canPersistAndQuery() {
+    void mappers_canPersistAndQuery() {
         ContentDraftJpaEntity draft = new ContentDraftJpaEntity();
         draft.setBizNo("BIZ-001");
         draft.setTitle("t");
@@ -69,11 +86,14 @@ class PersistenceLayerTest {
         draft.setWorkflowStatus(WorkflowStatus.DRAFT);
         draft.setCreatedAt(LocalDateTime.now());
         draft.setUpdatedAt(LocalDateTime.now());
-        draft = draftRepo.saveAndFlush(draft);
+        draft.prepareForInsert();
+        draftMapper.insert(draft);
 
         assertThat(draft.getId()).isNotNull();
-        assertThat(draftRepo.findByBizNo("BIZ-001")).isPresent();
-        assertThat(draftRepo.countByWorkflowStatus(WorkflowStatus.DRAFT)).isGreaterThanOrEqualTo(1);
+        assertThat(draftMapper.selectByBizNo("BIZ-001")).isPresent();
+        assertThat(store.countDraftsByStatus(new DraftQueryRequest(null, null, false, 1, 20,
+                DraftQueryRequest.DraftSortBy.UPDATED_AT, DraftQueryRequest.SortDirection.DESC,
+                null, null, null, null))).containsEntry(WorkflowStatus.DRAFT, 1L);
 
         ReviewRecordJpaEntity review = new ReviewRecordJpaEntity();
         review.setDraftId(draft.getId());
@@ -82,9 +102,10 @@ class PersistenceLayerTest {
         review.setDecision(ReviewDecision.APPROVE);
         review.setComment("ok");
         review.setReviewedAt(LocalDateTime.now());
-        review = reviewRepo.saveAndFlush(review);
+        review.prepareForInsert();
+        reviewMapper.insert(review);
         assertThat(review.getId()).isNotNull();
-        assertThat(reviewRepo.findTop1ByDraftIdOrderByReviewedAtDesc(draft.getId())).isPresent();
+        assertThat(reviewMapper.selectLatestByDraftId(draft.getId())).isPresent();
 
         ContentSnapshotJpaEntity snapshot = new ContentSnapshotJpaEntity();
         snapshot.setDraftId(draft.getId());
@@ -96,9 +117,10 @@ class PersistenceLayerTest {
         snapshot.setOperatorName("op");
         snapshot.setRollback(false);
         snapshot.setPublishedAt(LocalDateTime.now());
-        snapshot = snapshotRepo.saveAndFlush(snapshot);
+        snapshot.prepareForInsert();
+        snapshotMapper.insert(snapshot);
         assertThat(snapshot.getId()).isNotNull();
-        assertThat(snapshotRepo.findByDraftIdAndPublishedVersion(draft.getId(), 1)).isPresent();
+        assertThat(snapshotMapper.selectByDraftIdAndPublishedVersion(draft.getId(), 1)).isPresent();
 
         PublishTaskJpaEntity task = new PublishTaskJpaEntity();
         task.setDraftId(draft.getId());
@@ -108,9 +130,10 @@ class PersistenceLayerTest {
         task.setRetryTimes(0);
         task.setCreatedAt(LocalDateTime.now());
         task.setUpdatedAt(LocalDateTime.now());
-        task = taskRepo.saveAndFlush(task);
+        task.prepareForInsert();
+        taskMapper.insert(task);
         assertThat(task.getId()).isNotNull();
-        assertThat(taskRepo.findByStatusOrderByUpdatedAtAsc(PublishTaskStatus.PENDING)).isNotEmpty();
+        assertThat(taskMapper.selectByStatusOrderByUpdatedAtAsc(PublishTaskStatus.PENDING)).isNotEmpty();
 
         PublishCommandJpaEntity command = new PublishCommandJpaEntity();
         command.setDraftId(draft.getId());
@@ -123,10 +146,11 @@ class PersistenceLayerTest {
         command.setSnapshotId(snapshot.getId());
         command.setCreatedAt(LocalDateTime.now());
         command.setUpdatedAt(LocalDateTime.now());
-        command = commandRepo.saveAndFlush(command);
+        command.prepareForInsert();
+        commandMapper.insert(command);
         assertThat(command.getId()).isNotNull();
-        assertThat(commandRepo.findByDraftIdAndCommandTypeAndIdempotencyKey(draft.getId(), "PUBLISH", "cmd-001")).isPresent();
-        assertThat(commandRepo.findByDraftIdOrderByCreatedAtDesc(draft.getId())).isNotEmpty();
+        assertThat(commandMapper.selectByUniqueKey(draft.getId(), "PUBLISH", "cmd-001")).isPresent();
+        assertThat(commandMapper.selectByDraftIdOrderByCreatedAtDesc(draft.getId())).isNotEmpty();
 
         PublishLogJpaEntity log = new PublishLogJpaEntity();
         log.setDraftId(draft.getId());
@@ -134,41 +158,34 @@ class PersistenceLayerTest {
         log.setOperatorName("op");
         log.setRemark("r");
         log.setCreatedAt(LocalDateTime.now());
-        log = logRepo.saveAndFlush(log);
+        log.prepareForInsert();
+        logMapper.insert(log);
         assertThat(log.getId()).isNotNull();
-        assertThat(logRepo.findByDraftIdOrderByCreatedAtDesc(draft.getId())).isNotEmpty();
+        assertThat(logMapper.selectByDraftIdOrderByCreatedAtDesc(draft.getId())).isNotEmpty();
     }
 
     @Test
     void workflowStore_shouldRejectStaleDraftVersion() {
-        JpaWorkflowStore store = new JpaWorkflowStore(
-                draftRepo,
-                reviewRepo,
-                snapshotRepo,
-                taskRepo,
-                logRepo,
-                commandRepo,
-                operationLockRepo,
-                entityManager
-        );
-
-        ContentDraftJpaEntity draft = new ContentDraftJpaEntity();
-        draft.setBizNo("BIZ-CONCURRENT-001");
-        draft.setTitle("t1");
-        draft.setSummary("s1");
-        draft.setBody("b1");
-        draft.setDraftVersion(1);
-        draft.setPublishedVersion(0);
-        draft.setWorkflowStatus(WorkflowStatus.DRAFT);
-        draft.setCreatedAt(LocalDateTime.now());
-        draft.setUpdatedAt(LocalDateTime.now());
-        draft = draftRepo.saveAndFlush(draft);
-
+        ContentDraftJpaEntity draft = createDraft("BIZ-CONCURRENT-001");
         com.contentworkflow.workflow.domain.entity.ContentDraft stale = store.findDraftById(draft.getId()).orElseThrow();
 
         draft.setTitle("t2");
         draft.setUpdatedAt(LocalDateTime.now());
-        draftRepo.saveAndFlush(draft);
+        draftMapper.conditionalUpdate(
+                draft.getId(),
+                draft.getVersion(),
+                EnumSet.of(WorkflowStatus.DRAFT),
+                draft.getBizNo(),
+                draft.getTitle(),
+                draft.getSummary(),
+                draft.getBody(),
+                draft.getDraftVersion(),
+                draft.getPublishedVersion(),
+                draft.getWorkflowStatus(),
+                draft.getCurrentSnapshotId(),
+                draft.getLastReviewComment(),
+                draft.getUpdatedAt()
+        );
 
         stale.setTitle("t3");
         stale.setUpdatedAt(LocalDateTime.now());
@@ -178,30 +195,9 @@ class PersistenceLayerTest {
 
     @Test
     void workflowStore_shouldRejectUnexpectedDraftStateForConditionalUpdate() {
-        JpaWorkflowStore store = new JpaWorkflowStore(
-                draftRepo,
-                reviewRepo,
-                snapshotRepo,
-                taskRepo,
-                logRepo,
-                commandRepo,
-                operationLockRepo,
-                entityManager
-        );
+        ContentDraftJpaEntity draft = createDraft("BIZ-STATE-001");
 
-        ContentDraftJpaEntity draft = new ContentDraftJpaEntity();
-        draft.setBizNo("BIZ-STATE-001");
-        draft.setTitle("t1");
-        draft.setSummary("s1");
-        draft.setBody("b1");
-        draft.setDraftVersion(1);
-        draft.setPublishedVersion(0);
-        draft.setWorkflowStatus(WorkflowStatus.DRAFT);
-        draft.setCreatedAt(LocalDateTime.now());
-        draft.setUpdatedAt(LocalDateTime.now());
-        draft = draftRepo.saveAndFlush(draft);
-
-        int transitioned = draftRepo.conditionalUpdate(
+        int transitioned = draftMapper.conditionalUpdate(
                 draft.getId(),
                 draft.getVersion(),
                 EnumSet.of(WorkflowStatus.DRAFT),
@@ -231,28 +227,7 @@ class PersistenceLayerTest {
 
     @Test
     void workflowStore_shouldAcquireAndReleaseDraftOperationLock() {
-        JpaWorkflowStore store = new JpaWorkflowStore(
-                draftRepo,
-                reviewRepo,
-                snapshotRepo,
-                taskRepo,
-                logRepo,
-                commandRepo,
-                operationLockRepo,
-                entityManager
-        );
-
-        ContentDraftJpaEntity draft = new ContentDraftJpaEntity();
-        draft.setBizNo("BIZ-LOCK-001");
-        draft.setTitle("t1");
-        draft.setSummary("s1");
-        draft.setBody("b1");
-        draft.setDraftVersion(1);
-        draft.setPublishedVersion(0);
-        draft.setWorkflowStatus(WorkflowStatus.DRAFT);
-        draft.setCreatedAt(LocalDateTime.now());
-        draft.setUpdatedAt(LocalDateTime.now());
-        draft = draftRepo.saveAndFlush(draft);
+        ContentDraftJpaEntity draft = createDraft("BIZ-LOCK-001");
 
         LocalDateTime now = LocalDateTime.now();
         DraftOperationLockEntry lock = DraftOperationLockEntry.builder()
@@ -271,9 +246,101 @@ class PersistenceLayerTest {
         assertThat(store.renewDraftOperationLock(draft.getId(), 1, "worker-1", renewedAt, renewedExpiresAt)).isTrue();
         DraftOperationLockEntry renewed = store.findDraftOperationLock(draft.getId()).orElseThrow();
         assertThat(renewed.getLockedBy()).isEqualTo("worker-1");
-        assertThat(renewed.getLockedAt()).isEqualTo(renewedAt.truncatedTo(ChronoUnit.MICROS));
-        assertThat(renewed.getExpiresAt()).isEqualTo(renewedExpiresAt.truncatedTo(ChronoUnit.MICROS));
+        assertThat(Math.abs(ChronoUnit.MICROS.between(renewedAt, renewed.getLockedAt()))).isLessThanOrEqualTo(1);
+        assertThat(Math.abs(ChronoUnit.MICROS.between(renewedExpiresAt, renewed.getExpiresAt()))).isLessThanOrEqualTo(1);
         assertThat(store.releaseDraftOperationLock(draft.getId(), 1)).isTrue();
-        assertThat(store.findDraftOperationLock(draft.getId())).isEmpty();
+        assertThat(operationLockMapper.selectByDraftId(draft.getId())).isEmpty();
+    }
+
+    @Test
+    void outboxRepository_shouldHonorRequestedSortForStatusQueries() {
+        LocalDateTime baseTime = LocalDateTime.of(2026, 1, 1, 10, 0, 0);
+        OutboxEventEntity earlier = createOutboxEvent("evt-status-1", "article", "A-1", baseTime);
+        OutboxEventEntity later = createOutboxEvent("evt-status-2", "article", "A-2", baseTime.plusMinutes(10));
+
+        List<OutboxEventEntity> ascending = outboxRepository.findByStatusIn(
+                EnumSet.of(OutboxEventStatus.FAILED),
+                PageRequest.of(0, 10, Sort.by(Sort.Direction.ASC, "createdAt"))
+        );
+
+        assertThat(ascending)
+                .extracting(OutboxEventEntity::getId)
+                .containsExactly(earlier.getId(), later.getId());
+
+        List<OutboxEventEntity> descending = outboxRepository.findByStatusIn(
+                EnumSet.of(OutboxEventStatus.FAILED),
+                PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "createdAt"))
+        );
+
+        assertThat(descending)
+                .extracting(OutboxEventEntity::getId)
+                .containsExactly(later.getId(), earlier.getId());
+    }
+
+    @Test
+    void outboxRepository_shouldHonorRequestedSortForAggregateQueries() {
+        LocalDateTime createdAt = LocalDateTime.of(2026, 1, 2, 9, 0, 0);
+        OutboxEventEntity first = createOutboxEvent("evt-aggregate-1", "article", "A-100", createdAt);
+        OutboxEventEntity second = createOutboxEvent("evt-aggregate-2", "article", "A-100", createdAt);
+        createOutboxEvent("evt-aggregate-3", "article", "A-101", createdAt);
+
+        List<OutboxEventEntity> ascending = outboxRepository.findByAggregateTypeAndAggregateIdAndStatusIn(
+                "article",
+                "A-100",
+                EnumSet.of(OutboxEventStatus.FAILED),
+                PageRequest.of(0, 10, Sort.by(Sort.Direction.ASC, "createdAt"))
+        );
+
+        assertThat(ascending)
+                .extracting(OutboxEventEntity::getId)
+                .containsExactly(first.getId(), second.getId());
+
+        List<OutboxEventEntity> descending = outboxRepository.findByAggregateTypeAndAggregateIdAndStatusIn(
+                "article",
+                "A-100",
+                EnumSet.of(OutboxEventStatus.FAILED),
+                PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "createdAt"))
+        );
+
+        assertThat(descending)
+                .extracting(OutboxEventEntity::getId)
+                .containsExactly(second.getId(), first.getId());
+    }
+
+    private ContentDraftJpaEntity createDraft(String bizNo) {
+        ContentDraftJpaEntity draft = new ContentDraftJpaEntity();
+        draft.setBizNo(bizNo);
+        draft.setTitle("t1");
+        draft.setSummary("s1");
+        draft.setBody("b1");
+        draft.setDraftVersion(1);
+        draft.setPublishedVersion(0);
+        draft.setWorkflowStatus(WorkflowStatus.DRAFT);
+        draft.setCreatedAt(LocalDateTime.now());
+        draft.setUpdatedAt(LocalDateTime.now());
+        draft.prepareForInsert();
+        draftMapper.insert(draft);
+        return draft;
+    }
+
+    private OutboxEventEntity createOutboxEvent(String eventId,
+                                                String aggregateType,
+                                                String aggregateId,
+                                                LocalDateTime createdAt) {
+        OutboxEventEntity event = new OutboxEventEntity();
+        event.setEventId(eventId);
+        event.setEventType("CONTENT_PUBLISHED");
+        event.setAggregateType(aggregateType);
+        event.setAggregateId(aggregateId);
+        event.setAggregateVersion(1);
+        event.setExchangeName("workflow.exchange");
+        event.setRoutingKey("workflow.content.published");
+        event.setPayloadJson("{\"eventId\":\"" + eventId + "\"}");
+        event.setHeadersJson("{}");
+        event.setStatus(OutboxEventStatus.FAILED);
+        event.setAttempt(1);
+        event.setCreatedAt(createdAt);
+        event.setUpdatedAt(createdAt);
+        return outboxRepository.save(event);
     }
 }

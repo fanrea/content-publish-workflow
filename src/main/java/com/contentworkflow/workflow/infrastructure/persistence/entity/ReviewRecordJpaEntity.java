@@ -1,62 +1,28 @@
 package com.contentworkflow.workflow.infrastructure.persistence.entity;
 
 import com.contentworkflow.workflow.domain.enums.ReviewDecision;
-import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.LocalDateTime;
 
-/**
- * 持久化实体，用于映射数据库记录并承载 ORM 层的字段信息。
- */
-
 @Getter
 @Setter
 @NoArgsConstructor
-@Entity
-@Table(
-        name = "content_review_record",
-        indexes = {
-                @Index(name = "idx_review_record_draft_id", columnList = "draft_id"),
-                @Index(name = "idx_review_record_reviewed_at", columnList = "reviewed_at")
-        }
-)
 public class ReviewRecordJpaEntity {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-
-    @Column(name = "draft_id", nullable = false)
     private Long draftId;
-
-    @Column(name = "draft_version", nullable = false)
     private Integer draftVersion;
-
-    @Column(name = "reviewer", nullable = false, length = 64)
     private String reviewer;
-
-    @Enumerated(EnumType.STRING)
-    @Column(name = "decision", nullable = false, length = 16)
     private ReviewDecision decision;
-
-    @Column(name = "comment", length = 500)
     private String comment;
-
-    @Column(name = "reviewed_at", nullable = false)
     private LocalDateTime reviewedAt;
 
-    /**
-     * 处理 pre persist 相关逻辑，并返回对应的执行结果。
-     */
-
-    @PrePersist
-    public void prePersist() {
+    public void prepareForInsert() {
         if (reviewedAt == null) {
             reviewedAt = LocalDateTime.now();
         }
     }
 }
-

@@ -4,9 +4,6 @@ spring:
     driver-class-name: ${DB_DRIVER:com.mysql.cj.jdbc.Driver}
     username: ${DB_USER:root}
     password: ${DB_PASSWORD:root}
-  jpa:
-    hibernate:
-      ddl-auto: validate
   sql:
     init:
       # For real DBs prefer migrations (Flyway/Liquibase). Keep init off by default.

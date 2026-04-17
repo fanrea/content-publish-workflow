@@ -10,13 +10,6 @@ server:
     max-connections: ${TOMCAT_MAX_CONNECTIONS:10000}
     connection-timeout: ${TOMCAT_CONNECTION_TIMEOUT:5s}
 
-spring:
-  jpa:
-    properties:
-      hibernate:
-        # For load tests, reduce noisy SQL logging and focus on request metrics.
-        format_sql: false
-
 management:
   endpoints:
     web:
@@ -35,6 +28,4 @@ management:
 logging:
   level:
     root: INFO
-    org.hibernate.SQL: WARN
-    org.hibernate.orm.jdbc.bind: WARN
-
+    org.mybatis: WARN

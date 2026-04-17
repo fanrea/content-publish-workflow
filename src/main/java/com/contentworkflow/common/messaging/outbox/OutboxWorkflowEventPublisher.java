@@ -58,7 +58,7 @@ public class OutboxWorkflowEventPublisher implements WorkflowEventPublisher {
         row.setLockedBy(null);
         row.setErrorMessage(null);
         row.setSentAt(null);
-        // createdAt/updatedAt handled by @PrePersist
+        // createdAt/updatedAt defaults are filled by the repository before insert.
 
         row.setPayloadJson(toJsonQuietly(event.payload()));
         row.setHeadersJson(toJsonQuietly(event.headers()));
