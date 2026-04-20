@@ -2,7 +2,7 @@
 --
 -- Notes:
 -- 1) Spring Boot uses this file only for embedded database initialization.
--- 2) For MySQL, use the repository root file: sql/schema.sql.
+-- 2) For MySQL, use Flyway migrations under classpath:db/migration/mysql.
 -- 3) Keep this script H2-friendly and avoid MySQL-only clauses such as
 --    ON UPDATE CURRENT_TIMESTAMP.
 
@@ -72,6 +72,8 @@ CREATE TABLE content_publish_task (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     draft_id BIGINT NOT NULL,
     published_version INT NOT NULL,
+    trace_id VARCHAR(128) NULL,
+    request_id VARCHAR(128) NULL,
     task_type VARCHAR(64) NOT NULL,
     task_status VARCHAR(32) NOT NULL,
     retry_times INT NOT NULL DEFAULT 0,
@@ -84,6 +86,9 @@ CREATE TABLE content_publish_task (
     CONSTRAINT uk_task_draft_version_type UNIQUE (draft_id, published_version, task_type),
     CONSTRAINT fk_publish_task_draft FOREIGN KEY (draft_id) REFERENCES content_draft(id)
 );
+
+CREATE INDEX idx_task_trace_id ON content_publish_task (trace_id, created_at);
+CREATE INDEX idx_task_request_id ON content_publish_task (request_id, created_at);
 
 CREATE TABLE content_publish_log (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -136,6 +141,8 @@ CREATE TABLE workflow_outbox_event (
     routing_key VARCHAR(256) NOT NULL,
     payload_json TEXT NOT NULL,
     headers_json TEXT NULL,
+    trace_id VARCHAR(64) NULL,
+    request_id VARCHAR(64) NULL,
     status VARCHAR(16) NOT NULL,
     attempt INT NOT NULL DEFAULT 0,
     next_retry_at DATETIME(3) NULL,
@@ -174,3 +181,4 @@ CREATE INDEX idx_publish_command_status ON content_publish_command (command_stat
 CREATE INDEX idx_outbox_status_next ON workflow_outbox_event (status, next_retry_at, created_at);
 CREATE INDEX idx_outbox_locked ON workflow_outbox_event (locked_at);
 CREATE INDEX idx_outbox_aggregate ON workflow_outbox_event (aggregate_type, aggregate_id);
+CREATE INDEX idx_outbox_trace_created ON workflow_outbox_event (trace_id, created_at);

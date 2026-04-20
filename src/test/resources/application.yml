@@ -1,0 +1,18 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:cpw-test;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  sql:
+    init:
+      mode: embedded
+      schema-locations: classpath:sql/schema.sql
+  flyway:
+    enabled: false
+
+mybatis-plus:
+  mapper-locations: classpath*:mybatis/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    default-enum-type-handler: org.apache.ibatis.type.EnumTypeHandler

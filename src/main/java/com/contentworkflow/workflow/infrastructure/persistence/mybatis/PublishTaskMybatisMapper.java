@@ -1,5 +1,7 @@
 package com.contentworkflow.workflow.infrastructure.persistence.mybatis;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.contentworkflow.workflow.domain.enums.PublishTaskStatus;
 import com.contentworkflow.workflow.infrastructure.persistence.entity.PublishTaskEntity;
 import org.apache.ibatis.annotations.Mapper;
@@ -7,20 +9,21 @@ import org.apache.ibatis.annotations.Param;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Optional;
 
 @Mapper
-public interface PublishTaskMybatisMapper {
+public interface PublishTaskMybatisMapper extends BaseMapper<PublishTaskEntity> {
 
-    int insert(PublishTaskEntity entity);
+    default List<PublishTaskEntity> selectByStatusOrderByUpdatedAtAsc(PublishTaskStatus status) {
+        return selectList(new LambdaQueryWrapper<PublishTaskEntity>()
+                .eq(PublishTaskEntity::getStatus, status)
+                .orderByAsc(PublishTaskEntity::getUpdatedAt, PublishTaskEntity::getId));
+    }
 
-    int update(PublishTaskEntity entity);
-
-    Optional<PublishTaskEntity> selectById(Long id);
-
-    List<PublishTaskEntity> selectByStatusOrderByUpdatedAtAsc(PublishTaskStatus status);
-
-    List<PublishTaskEntity> selectByDraftIdOrderByUpdatedAtDesc(Long draftId);
+    default List<PublishTaskEntity> selectByDraftIdOrderByUpdatedAtDesc(Long draftId) {
+        return selectList(new LambdaQueryWrapper<PublishTaskEntity>()
+                .eq(PublishTaskEntity::getDraftId, draftId)
+                .orderByDesc(PublishTaskEntity::getUpdatedAt, PublishTaskEntity::getId));
+    }
 
     List<PublishTaskEntity> selectRunnableForUpdate(@Param("now") LocalDateTime now,
                                                        @Param("lockExpiredBefore") LocalDateTime lockExpiredBefore,

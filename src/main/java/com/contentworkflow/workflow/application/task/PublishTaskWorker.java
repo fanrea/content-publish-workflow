@@ -1,6 +1,8 @@
 package com.contentworkflow.workflow.application.task;
 
 import com.contentworkflow.common.exception.BusinessException;
+import com.contentworkflow.common.logging.WorkflowLogContext;
+import com.contentworkflow.common.logging.WorkflowLogScope;
 import com.contentworkflow.common.messaging.WorkflowEvent;
 import com.contentworkflow.common.messaging.WorkflowEventPublisher;
 import com.contentworkflow.common.messaging.WorkflowEventTypes;
@@ -77,11 +79,19 @@ public class PublishTaskWorker {
             return;
         }
         LocalDateTime now = LocalDateTime.now();
-        List<PublishTask> claimed = store.claimRunnablePublishTasks(batchSize, workerId, now, lockSeconds);
-        for (PublishTask task : claimed) {
-            executeOne(task, now);
+        try (WorkflowLogScope ignored = WorkflowLogContext.open(
+                WorkflowLogContext.resolveSnapshot(
+                        WorkflowLogContext.currentTraceId(),
+                        WorkflowLogContext.currentRequestId(),
+                        "loop-trace:publish-task-worker:" + workerId + ":" + now,
+                        "loop-request:publish-task-worker:" + workerId + ":" + now
+                ))) {
+            List<PublishTask> claimed = store.claimRunnablePublishTasks(batchSize, workerId, now, lockSeconds);
+            for (PublishTask task : claimed) {
+                executeOne(task, now);
+            }
+            taskProgressService.renewLeasesForAwaitingTasks(now, workerId);
         }
-        taskProgressService.renewLeasesForAwaitingTasks(now, workerId);
     }
 
     @Scheduled(fixedDelayString = "${workflow.task.worker.pollDelayMs:1000}")
@@ -93,39 +103,52 @@ public class PublishTaskWorker {
     }
 
     private void executeOne(PublishTask task, LocalDateTime now) {
-        if (task.getStatus() != PublishTaskStatus.RUNNING) {
-            return;
-        }
+        try (WorkflowLogScope ignored = WorkflowLogContext.open(
+                WorkflowLogContext.resolveSnapshot(
+                        task.getTraceId(),
+                        task.getRequestId(),
+                        "publish-task:"
+                                + workerId + ":"
+                                + task.getId() + ":"
+                                + task.getDraftId() + ":"
+                                + task.getPublishedVersion() + ":"
+                                + task.getTaskType(),
+                        "publish-task-request:" + workerId + ":" + task.getId()
+                ))) {
+            if (task.getStatus() != PublishTaskStatus.RUNNING) {
+                return;
+            }
 
-        ContentDraft draft = store.findDraftById(task.getDraftId()).orElse(null);
-        if (draft == null) {
-            markDead(task, now, "draft not found");
-            return;
-        }
+            ContentDraft draft = store.findDraftById(task.getDraftId()).orElse(null);
+            if (draft == null) {
+                markDead(task, now, "draft not found");
+                return;
+            }
 
-        ContentSnapshot snapshot = store.listSnapshots(task.getDraftId()).stream()
-                .filter(item -> Objects.equals(item.getPublishedVersion(), task.getPublishedVersion()))
-                .findFirst()
-                .orElse(null);
-        if (snapshot == null) {
-            markDead(task, now, "snapshot not found for version=" + task.getPublishedVersion());
-            return;
-        }
+            ContentSnapshot snapshot = store.listSnapshots(task.getDraftId()).stream()
+                    .filter(item -> Objects.equals(item.getPublishedVersion(), task.getPublishedVersion()))
+                    .findFirst()
+                    .orElse(null);
+            if (snapshot == null) {
+                markDead(task, now, "snapshot not found for version=" + task.getPublishedVersion());
+                return;
+            }
 
-        PublishTaskHandler handler = handlers.get(task.getTaskType());
-        if (handler == null) {
-            markDead(task, now, "handler not found for type=" + task.getTaskType());
-            return;
-        }
+            PublishTaskHandler handler = handlers.get(task.getTaskType());
+            if (handler == null) {
+                markDead(task, now, "handler not found for type=" + task.getTaskType());
+                return;
+            }
 
-        PublishTaskContext ctx = new PublishTaskContext(draft, snapshot, task, snapshot.getOperator(), eventPublisher);
-        try {
-            handler.execute(ctx);
-            taskProgressService.markTaskDispatched(task, now, workerId);
-        } catch (Exception ex) {
-            markFailedOrDead(task, now, ex);
-            if (task.getStatus() == PublishTaskStatus.DEAD) {
-                markDraftFailedAndCompensate(draft.getId(), task.getPublishedVersion(), now, snapshot.getOperator(), ex.getMessage());
+            PublishTaskContext ctx = new PublishTaskContext(draft, snapshot, task, snapshot.getOperator(), eventPublisher);
+            try {
+                handler.execute(ctx);
+                taskProgressService.markTaskDispatched(task, now, workerId);
+            } catch (Exception ex) {
+                markFailedOrDead(task, now, ex);
+                if (task.getStatus() == PublishTaskStatus.DEAD) {
+                    markDraftFailedAndCompensate(draft.getId(), task.getPublishedVersion(), now, snapshot.getOperator(), ex.getMessage());
+                }
             }
         }
     }
@@ -223,7 +246,11 @@ public class PublishTaskWorker {
                 String.valueOf(draftId),
                 publishedVersion,
                 Map.of("draftId", draftId, "publishedVersion", publishedVersion, "reason", reason),
-                Map.of("operator", operator == null ? "system" : operator)
+                WorkflowLogContext.appendHeaders(
+                        Map.of("operator", operator == null ? "system" : operator),
+                        "publish-failed:" + draftId + ":" + publishedVersion,
+                        "publish-failed-request:" + draftId + ":" + publishedVersion
+                )
         ));
 
         List<PublishTask> succeeded = store.listPublishTasks(draftId).stream()
@@ -238,18 +265,29 @@ public class PublishTaskWorker {
         if (snapshot == null) {
             return;
         }
-        for (PublishTask task : succeeded) {
-            PublishTaskHandler handler = handlers.get(task.getTaskType());
+        for (PublishTask succeededTask : succeeded) {
+            PublishTaskHandler handler = handlers.get(succeededTask.getTaskType());
             if (handler == null) {
                 continue;
             }
-            try {
-                handler.compensate(new PublishTaskContext(draft, snapshot, task, operator, eventPublisher));
-                store.insertPublishLog(WorkflowAuditLogFactory.taskAction(task, "TASK_COMPENSATED", workerId, workerId)
+            try (WorkflowLogScope ignored = WorkflowLogContext.open(
+                    WorkflowLogContext.resolveSnapshot(
+                            succeededTask.getTraceId(),
+                            succeededTask.getRequestId(),
+                            "publish-task:"
+                                    + workerId + ":"
+                                    + succeededTask.getId() + ":"
+                                    + succeededTask.getDraftId() + ":"
+                                    + succeededTask.getPublishedVersion() + ":"
+                                    + succeededTask.getTaskType(),
+                            "publish-task-request:" + workerId + ":" + succeededTask.getId()
+                    ))) {
+                handler.compensate(new PublishTaskContext(draft, snapshot, succeededTask, operator, eventPublisher));
+                store.insertPublishLog(WorkflowAuditLogFactory.taskAction(succeededTask, "TASK_COMPENSATED", workerId, workerId)
                         .beforeStatus(PublishTaskStatus.SUCCESS.name())
                         .afterStatus(PublishTaskStatus.SUCCESS.name())
                         .result(WorkflowAuditResult.SUCCESS)
-                        .remark(task.getTaskType() + "@" + publishedVersion)
+                        .remark(succeededTask.getTaskType() + "@" + publishedVersion)
                         .createdAt(now)
                         .build());
             } catch (Exception ignored) {

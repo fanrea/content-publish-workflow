@@ -1,5 +1,6 @@
 package com.contentworkflow.workflow.application;
 
+import com.contentworkflow.workflow.application.store.InMemoryWorkflowStore;
 import com.contentworkflow.workflow.domain.enums.ReviewDecision;
 import com.contentworkflow.workflow.interfaces.dto.CreateDraftRequest;
 import com.contentworkflow.workflow.interfaces.dto.ReviewDecisionRequest;
@@ -28,7 +29,7 @@ class ContentWorkflowHistoryTest {
 
     @BeforeEach
     void setUp() {
-        service = new InMemoryContentWorkflowService();
+        service = new ContentWorkflowApplicationService(new InMemoryWorkflowStore());
     }
 
     /**

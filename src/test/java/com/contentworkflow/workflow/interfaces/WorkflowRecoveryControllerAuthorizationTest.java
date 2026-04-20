@@ -3,16 +3,18 @@ package com.contentworkflow.workflow.interfaces;
 import com.contentworkflow.common.messaging.outbox.OutboxEventStatus;
 import com.contentworkflow.common.web.GlobalExceptionHandler;
 import com.contentworkflow.common.web.auth.CurrentWorkflowOperatorArgumentResolver;
-import com.contentworkflow.common.web.auth.WorkflowAuthConstants;
 import com.contentworkflow.common.web.auth.WorkflowAuthorizationInterceptor;
 import com.contentworkflow.common.web.auth.WorkflowOperatorResolver;
 import com.contentworkflow.common.web.auth.WorkflowPermissionPolicy;
+import com.contentworkflow.testing.WorkflowSecurityTestSupport;
 import com.contentworkflow.workflow.application.task.WorkflowRecoveryService;
+import com.contentworkflow.workflow.domain.enums.WorkflowRole;
 import com.contentworkflow.workflow.domain.enums.PublishTaskStatus;
 import com.contentworkflow.workflow.interfaces.vo.ManualRecoveryResponse;
 import com.contentworkflow.workflow.interfaces.vo.RecoverableOutboxEventResponse;
 import com.contentworkflow.workflow.interfaces.vo.RecoverablePublishTaskResponse;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -29,6 +31,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static com.contentworkflow.testing.WorkflowSecurityTestSupport.authenticatedWorkflowOperator;
 
 /**
  * 测试类，用于验证当前模块在特定场景下的行为、状态变化或边界条件。
@@ -100,7 +103,13 @@ class WorkflowRecoveryControllerAuthorizationTest {
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .addInterceptors(new WorkflowAuthorizationInterceptor(resolver, permissionPolicy))
                 .setCustomArgumentResolvers(new CurrentWorkflowOperatorArgumentResolver(resolver))
+                .alwaysDo(result -> WorkflowSecurityTestSupport.clearSecurityContext())
                 .build();
+    }
+
+    @AfterEach
+    void tearDown() {
+        WorkflowSecurityTestSupport.clearSecurityContext();
     }
 
     /**
@@ -114,16 +123,12 @@ class WorkflowRecoveryControllerAuthorizationTest {
                 .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
 
         mockMvc.perform(get("/api/workflows/drafts/1/recovery/tasks")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLE_HEADER, "EDITOR"))
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.EDITOR)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
 
         mockMvc.perform(get("/api/workflows/drafts/1/recovery/tasks")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLE_HEADER, "OPERATOR"))
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.OPERATOR)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"));
     }
@@ -139,16 +144,12 @@ class WorkflowRecoveryControllerAuthorizationTest {
                 .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
 
         mockMvc.perform(post("/api/workflows/drafts/1/tasks/2/manual-retry")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLE_HEADER, "REVIEWER"))
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.REVIEWER)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
 
         mockMvc.perform(post("/api/workflows/drafts/1/tasks/2/manual-retry")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLE_HEADER, "OPERATOR"))
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.OPERATOR)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"));
     }
@@ -160,16 +161,12 @@ class WorkflowRecoveryControllerAuthorizationTest {
     @Test
     void listRecoverableOutboxEvents_shouldRequireAdminRole() throws Exception {
         mockMvc.perform(get("/api/workflows/outbox/events/recovery")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLE_HEADER, "OPERATOR"))
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.OPERATOR)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
 
         mockMvc.perform(get("/api/workflows/outbox/events/recovery")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLE_HEADER, "ADMIN"))
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.ADMIN)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"));
     }

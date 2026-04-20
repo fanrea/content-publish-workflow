@@ -1,5 +1,6 @@
 package com.contentworkflow.common.messaging;
 
+import com.contentworkflow.common.logging.WorkflowLogScope;
 import com.contentworkflow.workflow.application.task.PublishTaskEventFactory;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -57,14 +58,16 @@ public class WorkflowSideEffectEventLoggingListener {
                                               @Header(name = AmqpHeaders.MESSAGE_ID, required = false) String messageId,
                                               @Header(name = "x-event-type", required = false) String eventType,
                                               @Headers Map<String, Object> headers) {
-        if (!deduplicationGuard.firstConsume(messageId)) {
-            log.info("skip duplicate search-index event messageId={} type={}", messageId, eventType);
-            return;
+        try (WorkflowLogScope ignored = WorkflowMessagingTraceContext.openInboundScope(headers, messageId)) {
+            if (!deduplicationGuard.firstConsume(messageId)) {
+                log.info("skip duplicate search-index event messageId={} type={}", messageId, eventType);
+                return;
+            }
+            PublishTaskEventFactory.SearchIndexRefreshRequestedPayload eventPayload =
+                    readPayload(payload, PublishTaskEventFactory.SearchIndexRefreshRequestedPayload.class);
+            consumerService.acceptSearchIndexRefresh(messageId, eventPayload);
+            log.info("received search-index side-effect event messageId={} type={} headers={}", messageId, eventType, headers);
         }
-        PublishTaskEventFactory.SearchIndexRefreshRequestedPayload eventPayload =
-                readPayload(payload, PublishTaskEventFactory.SearchIndexRefreshRequestedPayload.class);
-        consumerService.acceptSearchIndexRefresh(messageId, eventPayload);
-        log.info("received search-index side-effect event messageId={} type={} headers={}", messageId, eventType, headers);
     }
 
     /**
@@ -81,14 +84,16 @@ public class WorkflowSideEffectEventLoggingListener {
                                          @Header(name = AmqpHeaders.MESSAGE_ID, required = false) String messageId,
                                          @Header(name = "x-event-type", required = false) String eventType,
                                          @Headers Map<String, Object> headers) {
-        if (!deduplicationGuard.firstConsume(messageId)) {
-            log.info("skip duplicate read-model event messageId={} type={}", messageId, eventType);
-            return;
+        try (WorkflowLogScope ignored = WorkflowMessagingTraceContext.openInboundScope(headers, messageId)) {
+            if (!deduplicationGuard.firstConsume(messageId)) {
+                log.info("skip duplicate read-model event messageId={} type={}", messageId, eventType);
+                return;
+            }
+            PublishTaskEventFactory.ReadModelSyncRequestedPayload eventPayload =
+                    readPayload(payload, PublishTaskEventFactory.ReadModelSyncRequestedPayload.class);
+            consumerService.acceptReadModelSync(messageId, eventPayload);
+            log.info("received read-model side-effect event messageId={} type={} headers={}", messageId, eventType, headers);
         }
-        PublishTaskEventFactory.ReadModelSyncRequestedPayload eventPayload =
-                readPayload(payload, PublishTaskEventFactory.ReadModelSyncRequestedPayload.class);
-        consumerService.acceptReadModelSync(messageId, eventPayload);
-        log.info("received read-model side-effect event messageId={} type={} headers={}", messageId, eventType, headers);
     }
 
     /**
@@ -105,14 +110,16 @@ public class WorkflowSideEffectEventLoggingListener {
                                         @Header(name = AmqpHeaders.MESSAGE_ID, required = false) String messageId,
                                         @Header(name = "x-event-type", required = false) String eventType,
                                         @Headers Map<String, Object> headers) {
-        if (!deduplicationGuard.firstConsume(messageId)) {
-            log.info("skip duplicate notification event messageId={} type={}", messageId, eventType);
-            return;
+        try (WorkflowLogScope ignored = WorkflowMessagingTraceContext.openInboundScope(headers, messageId)) {
+            if (!deduplicationGuard.firstConsume(messageId)) {
+                log.info("skip duplicate notification event messageId={} type={}", messageId, eventType);
+                return;
+            }
+            PublishTaskEventFactory.PublishNotificationRequestedPayload eventPayload =
+                    readPayload(payload, PublishTaskEventFactory.PublishNotificationRequestedPayload.class);
+            consumerService.acceptPublishNotification(messageId, eventPayload);
+            log.info("received notification side-effect event messageId={} type={} headers={}", messageId, eventType, headers);
         }
-        PublishTaskEventFactory.PublishNotificationRequestedPayload eventPayload =
-                readPayload(payload, PublishTaskEventFactory.PublishNotificationRequestedPayload.class);
-        consumerService.acceptPublishNotification(messageId, eventPayload);
-        log.info("received notification side-effect event messageId={} type={} headers={}", messageId, eventType, headers);
     }
 
     /**

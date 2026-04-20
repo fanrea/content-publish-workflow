@@ -5,7 +5,7 @@ import com.contentworkflow.common.messaging.WorkflowEventPublisher;
 import com.contentworkflow.common.messaging.WorkflowEventTypes;
 import com.contentworkflow.common.messaging.WorkflowSideEffectConsumerService;
 import com.contentworkflow.workflow.application.ContentWorkflowService;
-import com.contentworkflow.workflow.application.InMemoryContentWorkflowService;
+import com.contentworkflow.workflow.application.ContentWorkflowApplicationService;
 import com.contentworkflow.workflow.application.store.InMemoryWorkflowStore;
 import com.contentworkflow.workflow.application.store.WorkflowStore;
 import com.contentworkflow.workflow.domain.entity.ContentDraft;
@@ -44,7 +44,7 @@ class PublishTaskWorkerEventDispatchTest {
     @BeforeEach
     void setUp() {
         store = new InMemoryWorkflowStore();
-        service = new InMemoryContentWorkflowService(store);
+        service = new ContentWorkflowApplicationService(store);
         eventPublisher = new RecordingWorkflowEventPublisher();
 
         PublishTaskProgressService taskProgressService = new PublishTaskProgressService(store, eventPublisher);

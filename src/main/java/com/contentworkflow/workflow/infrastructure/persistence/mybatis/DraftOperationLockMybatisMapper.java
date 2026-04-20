@@ -1,5 +1,6 @@
 package com.contentworkflow.workflow.infrastructure.persistence.mybatis;
 
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.contentworkflow.workflow.domain.enums.DraftOperationType;
 import com.contentworkflow.workflow.infrastructure.persistence.entity.DraftOperationLockEntity;
 import org.apache.ibatis.annotations.Mapper;
@@ -9,16 +10,7 @@ import java.time.LocalDateTime;
 import java.util.Optional;
 
 @Mapper
-public interface DraftOperationLockMybatisMapper {
-
-    Optional<DraftOperationLockEntity> selectByDraftId(Long draftId);
-
-    int insertLock(@Param("draftId") Long draftId,
-                   @Param("operationType") String operationType,
-                   @Param("targetPublishedVersion") Integer targetPublishedVersion,
-                   @Param("lockedBy") String lockedBy,
-                   @Param("lockedAt") LocalDateTime lockedAt,
-                   @Param("expiresAt") LocalDateTime expiresAt);
+public interface DraftOperationLockMybatisMapper extends BaseMapper<DraftOperationLockEntity> {
 
     int replaceExpiredLock(@Param("draftId") Long draftId,
                            @Param("operationType") DraftOperationType operationType,

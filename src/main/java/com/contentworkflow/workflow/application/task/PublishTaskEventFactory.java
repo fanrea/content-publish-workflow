@@ -1,5 +1,6 @@
 package com.contentworkflow.workflow.application.task;
 
+import com.contentworkflow.common.logging.WorkflowLogContext;
 import com.contentworkflow.common.messaging.WorkflowEvent;
 import com.contentworkflow.common.messaging.WorkflowEventTypes;
 import com.contentworkflow.workflow.domain.entity.ContentDraft;
@@ -149,7 +150,11 @@ public final class PublishTaskEventFactory {
         headers.put("snapshotId", snapshot.getId());
         headers.put("rollback", snapshot.isRollback());
         headers.put("operator", normalizeOperator(operator, snapshot.getOperator()));
-        return headers;
+        return WorkflowLogContext.appendHeaders(
+                headers,
+                "publish-task-event:" + task.getId() + ":" + task.getTaskType() + ":" + snapshot.getPublishedVersion(),
+                "publish-task-event-request:" + task.getId()
+        );
     }
 
     /**

@@ -8,6 +8,8 @@
         id,
         draft_id,
         published_version,
+        trace_id,
+        request_id,
         task_type,
         task_status,
         retry_times,
@@ -18,67 +20,6 @@
         created_at,
         updated_at
     </sql>
-
-    <insert id="insert" parameterType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishTaskEntity"
-            useGeneratedKeys="true" keyProperty="id">
-        insert into content_publish_task (
-            draft_id,
-            published_version,
-            task_type,
-            task_status,
-            retry_times,
-            error_message,
-            next_run_at,
-            locked_by,
-            locked_at,
-            created_at,
-            updated_at
-        ) values (
-            #{draftId},
-            #{publishedVersion},
-            #{taskType},
-            #{status},
-            #{retryTimes},
-            #{errorMessage},
-            #{nextRunAt},
-            #{lockedBy},
-            #{lockedAt},
-            #{createdAt},
-            #{updatedAt}
-        )
-    </insert>
-
-    <update id="update" parameterType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishTaskEntity">
-        update content_publish_task
-        set task_status = #{status},
-            retry_times = #{retryTimes},
-            error_message = #{errorMessage},
-            next_run_at = #{nextRunAt},
-            locked_by = #{lockedBy},
-            locked_at = #{lockedAt},
-            updated_at = #{updatedAt}
-        where id = #{id}
-    </update>
-
-    <select id="selectById" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishTaskEntity">
-        select <include refid="taskColumns" />
-        from content_publish_task
-        where id = #{id}
-    </select>
-
-    <select id="selectByStatusOrderByUpdatedAtAsc" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishTaskEntity">
-        select <include refid="taskColumns" />
-        from content_publish_task
-        where task_status = #{status}
-        order by updated_at asc, id asc
-    </select>
-
-    <select id="selectByDraftIdOrderByUpdatedAtDesc" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishTaskEntity">
-        select <include refid="taskColumns" />
-        from content_publish_task
-        where draft_id = #{draftId}
-        order by updated_at desc, id desc
-    </select>
 
     <select id="selectRunnableForUpdate" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.PublishTaskEntity">
         select <include refid="taskColumns" />

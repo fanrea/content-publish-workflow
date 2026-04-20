@@ -19,6 +19,10 @@ public record WorkflowEvent(
         LocalDateTime occurredAt
 ) {
 
+    public WorkflowEvent {
+        headers = WorkflowMessagingTraceContext.enrichOutboundHeaders(headers);
+    }
+
     /**
      * 处理 of 相关逻辑，并返回对应的执行结果。
      *
@@ -44,7 +48,7 @@ public record WorkflowEvent(
                 Objects.requireNonNull(aggregateId, "aggregateId"),
                 aggregateVersion,
                 payload,
-                headers,
+                WorkflowMessagingTraceContext.enrichOutboundHeaders(headers),
                 LocalDateTime.now()
         );
     }

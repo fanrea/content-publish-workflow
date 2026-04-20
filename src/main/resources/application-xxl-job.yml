@@ -1,10 +1,12 @@
 xxl:
   job:
     admin:
+      # Production should trigger workers from the scheduler center; local demos can also point to a standalone xxl-job-admin.
       addresses: ${XXL_JOB_ADMIN_ADDRESSES:http://127.0.0.1:8080/xxl-job-admin}
       accessToken: ${XXL_JOB_ACCESS_TOKEN:default_token}
       timeout: ${XXL_JOB_ADMIN_TIMEOUT:3}
     executor:
+      # When enabled, WorkflowXxlJobHandlers becomes the trigger entry for worker polling.
       enabled: true
       appname: ${XXL_JOB_EXECUTOR_APPNAME:content-publish-workflow}
       address: ${XXL_JOB_EXECUTOR_ADDRESS:}
@@ -15,10 +17,13 @@ xxl:
 
 workflow:
   scheduler:
+    production-recommended: xxl-job
+    startup-report-enabled: true
     local:
+      # Explicitly disable local polling in xxl-job mode to avoid duplicate triggers.
       enabled: false
 
-# Suggested admin job registration:
+# Suggested XXL-Job admin registration:
 # 1. workflowPublishTaskPollJob        param optional, cadence e.g. every 5s
 # 2. workflowOutboxRelayJob            param optional, cadence e.g. every 5s
 # 3. workflowDeadPublishTaskScanJob    param = scan limit, e.g. 100

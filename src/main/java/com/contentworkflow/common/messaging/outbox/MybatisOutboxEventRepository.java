@@ -1,6 +1,11 @@
 package com.contentworkflow.common.messaging.outbox;
 
+import com.contentworkflow.common.logging.WorkflowLogContext;
+import com.contentworkflow.common.messaging.WorkflowMessagingTraceContext;
 import com.contentworkflow.common.messaging.outbox.mybatis.OutboxEventMybatisMapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Repository;
@@ -8,32 +13,40 @@ import org.springframework.stereotype.Repository;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 
 @Repository
 public class MybatisOutboxEventRepository implements OutboxEventRepository {
 
-    private final OutboxEventMybatisMapper mapper;
+    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
+    };
 
-    public MybatisOutboxEventRepository(OutboxEventMybatisMapper mapper) {
+    private final OutboxEventMybatisMapper mapper;
+    private final ObjectMapper objectMapper;
+
+    public MybatisOutboxEventRepository(OutboxEventMybatisMapper mapper, ObjectMapper objectMapper) {
         this.mapper = mapper;
+        this.objectMapper = objectMapper;
     }
 
     @Override
     public Optional<OutboxEventEntity> findById(Long id) {
-        return mapper.selectById(id);
+        return Optional.ofNullable(hydrateTraceContext(mapper.selectById(id)));
     }
 
     @Override
     public OutboxEventEntity save(OutboxEventEntity entity) {
+        synchronizeTraceContext(entity);
         if (entity.getId() == null) {
             entity.prepareForInsert();
             mapper.insert(entity);
         } else {
             entity.touchForUpdate();
-            mapper.update(entity);
+            mapper.updateById(entity);
         }
         return entity;
     }
@@ -51,17 +64,26 @@ public class MybatisOutboxEventRepository implements OutboxEventRepository {
                                                        LocalDateTime now,
                                                        LocalDateTime lockExpiredBefore,
                                                        Pageable pageable) {
-        return mapper.selectClaimCandidates(statuses, now, lockExpiredBefore, pageable.getPageSize());
+        return mapper.selectClaimCandidates(statuses, now, lockExpiredBefore, pageable.getPageSize())
+                .stream()
+                .map(this::hydrateTraceContext)
+                .toList();
     }
 
     @Override
     public List<OutboxEventEntity> findByStatusOrderByCreatedAtAsc(OutboxEventStatus status, Pageable pageable) {
-        return mapper.selectByStatusOrderByCreatedAtAsc(status, pageable.getPageSize(), pageable.getOffset());
+        return mapper.selectByStatusOrderByCreatedAtAsc(status, pageable.getPageSize(), pageable.getOffset())
+                .stream()
+                .map(this::hydrateTraceContext)
+                .toList();
     }
 
     @Override
     public List<OutboxEventEntity> findByStatusIn(Collection<OutboxEventStatus> statuses, Pageable pageable) {
-        return mapper.selectByStatusIn(statuses, pageable.getPageSize(), pageable.getOffset(), buildOrderByClause(pageable));
+        return mapper.selectByStatusIn(statuses, pageable.getPageSize(), pageable.getOffset(), buildOrderByClause(pageable))
+                .stream()
+                .map(this::hydrateTraceContext)
+                .toList();
     }
 
     @Override
@@ -76,7 +98,40 @@ public class MybatisOutboxEventRepository implements OutboxEventRepository {
                 pageable.getPageSize(),
                 pageable.getOffset(),
                 buildOrderByClause(pageable)
-        );
+        ).stream().map(this::hydrateTraceContext).toList();
+    }
+
+    private OutboxEventEntity hydrateTraceContext(OutboxEventEntity entity) {
+        if (entity == null) {
+            return null;
+        }
+        Map<String, Object> headers = parseHeaders(entity.getHeadersJson());
+        if (isBlank(entity.getTraceId())) {
+            entity.setTraceId(resolveTraceId(headers));
+        }
+        if (isBlank(entity.getRequestId())) {
+            entity.setRequestId(resolveRequestId(headers));
+        }
+        return entity;
+    }
+
+    private void synchronizeTraceContext(OutboxEventEntity entity) {
+        if (entity == null) {
+            return;
+        }
+        Map<String, Object> headers = new LinkedHashMap<>(parseHeaders(entity.getHeadersJson()));
+        putIfPresent(headers, WorkflowLogContext.TRACE_ID_HEADER, entity.getTraceId());
+        putIfPresent(headers, WorkflowLogContext.TRACE_ID_KEY, entity.getTraceId());
+        putIfPresent(headers, WorkflowLogContext.REQUEST_ID_HEADER, entity.getRequestId());
+        putIfPresent(headers, WorkflowLogContext.REQUEST_ID_KEY, entity.getRequestId());
+
+        Map<String, Object> normalizedHeaders = new LinkedHashMap<>(WorkflowMessagingTraceContext.enrichOutboundHeaders(headers));
+        String traceId = firstNonBlank(entity.getTraceId(), resolveTraceId(normalizedHeaders));
+        String requestId = firstNonBlank(entity.getRequestId(), resolveRequestId(normalizedHeaders));
+
+        entity.setTraceId(traceId);
+        entity.setRequestId(requestId);
+        entity.setHeadersJson(toJson(normalizedHeaders));
     }
 
     private String buildOrderByClause(Pageable pageable) {
@@ -114,5 +169,73 @@ public class MybatisOutboxEventRepository implements OutboxEventRepository {
 
     private String resolveDirection(Sort.Direction direction) {
         return direction == null ? "ASC" : direction.name().toUpperCase(Locale.ROOT);
+    }
+
+    private Map<String, Object> parseHeaders(String headersJson) {
+        if (isBlank(headersJson)) {
+            return Map.of();
+        }
+        try {
+            Map<String, Object> headers = objectMapper.readValue(headersJson, MAP_TYPE);
+            if (headers == null || headers.isEmpty()) {
+                return Map.of();
+            }
+            return headers;
+        } catch (Exception ex) {
+            return Map.of();
+        }
+    }
+
+    private String toJson(Map<String, Object> headers) {
+        if (headers == null || headers.isEmpty()) {
+            return "{}";
+        }
+        try {
+            return objectMapper.writeValueAsString(headers);
+        } catch (JsonProcessingException ex) {
+            return "{}";
+        }
+    }
+
+    private String resolveTraceId(Map<String, Object> headers) {
+        return firstNonBlank(
+                headerValue(headers, WorkflowLogContext.TRACE_ID_HEADER),
+                headerValue(headers, WorkflowLogContext.TRACE_ID_KEY),
+                headerValue(headers, WorkflowLogContext.B3_TRACE_ID_HEADER)
+        );
+    }
+
+    private String resolveRequestId(Map<String, Object> headers) {
+        return firstNonBlank(
+                headerValue(headers, WorkflowLogContext.REQUEST_ID_HEADER),
+                headerValue(headers, WorkflowLogContext.REQUEST_ID_KEY)
+        );
+    }
+
+    private String headerValue(Map<String, Object> headers, String key) {
+        if (headers == null || headers.isEmpty() || key == null) {
+            return null;
+        }
+        Object value = headers.get(key);
+        return value == null ? null : String.valueOf(value).trim();
+    }
+
+    private void putIfPresent(Map<String, Object> headers, String key, String value) {
+        if (!isBlank(value)) {
+            headers.put(key, value.trim());
+        }
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (!isBlank(value)) {
+                return value.trim();
+            }
+        }
+        return null;
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 }

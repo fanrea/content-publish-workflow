@@ -26,12 +26,12 @@ import com.contentworkflow.workflow.infrastructure.persistence.mybatis.PublishTa
 import com.contentworkflow.workflow.infrastructure.persistence.mybatis.ReviewRecordMybatisMapper;
 import com.contentworkflow.workflow.interfaces.dto.DraftQueryRequest;
 import org.junit.jupiter.api.Test;
-import org.mybatis.spring.boot.test.autoconfigure.MybatisTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
-import org.springframework.context.annotation.Import;
+import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
@@ -42,8 +42,8 @@ import static com.contentworkflow.testing.BusinessExceptionAssertions.assertCode
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-@MybatisTest
-@Import({MybatisWorkflowStore.class, MybatisOutboxEventRepository.class})
+@SpringBootTest
+@Transactional
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.ANY)
 class PersistenceLayerTest {
 
@@ -125,6 +125,8 @@ class PersistenceLayerTest {
         PublishTaskEntity task = new PublishTaskEntity();
         task.setDraftId(draft.getId());
         task.setPublishedVersion(1);
+        task.setTraceId("trace-persist-001");
+        task.setRequestId("request-persist-001");
         task.setTaskType(PublishTaskType.REFRESH_SEARCH_INDEX);
         task.setStatus(PublishTaskStatus.PENDING);
         task.setRetryTimes(0);
@@ -133,6 +135,10 @@ class PersistenceLayerTest {
         task.prepareForInsert();
         taskMapper.insert(task);
         assertThat(task.getId()).isNotNull();
+        PublishTaskEntity persistedTask = taskMapper.selectById(task.getId());
+        assertThat(persistedTask).isNotNull();
+        assertThat(persistedTask.getTraceId()).isEqualTo("trace-persist-001");
+        assertThat(persistedTask.getRequestId()).isEqualTo("request-persist-001");
         assertThat(taskMapper.selectByStatusOrderByUpdatedAtAsc(PublishTaskStatus.PENDING)).isNotEmpty();
 
         PublishCommandEntity command = new PublishCommandEntity();
@@ -249,7 +255,7 @@ class PersistenceLayerTest {
         assertThat(Math.abs(ChronoUnit.MICROS.between(renewedAt, renewed.getLockedAt()))).isLessThanOrEqualTo(1);
         assertThat(Math.abs(ChronoUnit.MICROS.between(renewedExpiresAt, renewed.getExpiresAt()))).isLessThanOrEqualTo(1);
         assertThat(store.releaseDraftOperationLock(draft.getId(), 1)).isTrue();
-        assertThat(operationLockMapper.selectByDraftId(draft.getId())).isEmpty();
+        assertThat(operationLockMapper.selectById(draft.getId())).isNull();
     }
 
     @Test
@@ -307,6 +313,30 @@ class PersistenceLayerTest {
                 .containsExactly(second.getId(), first.getId());
     }
 
+    @Test
+    void outboxRepository_shouldPersistTraceAndRequestIdsAsDedicatedColumns() {
+        OutboxEventEntity event = new OutboxEventEntity();
+        event.setEventId("evt-trace-1");
+        event.setEventType("CONTENT_PUBLISHED");
+        event.setAggregateType("article");
+        event.setAggregateId("A-trace-1");
+        event.setAggregateVersion(1);
+        event.setExchangeName("workflow.exchange");
+        event.setRoutingKey("workflow.content.published");
+        event.setPayloadJson("{\"eventId\":\"evt-trace-1\"}");
+        event.setHeadersJson("{\"X-Trace-Id\":\"trace-outbox-1001\",\"traceId\":\"trace-outbox-1001\",\"X-Request-Id\":\"req-outbox-1001\",\"requestId\":\"req-outbox-1001\"}");
+        event.setStatus(OutboxEventStatus.NEW);
+        event.setAttempt(0);
+
+        OutboxEventEntity saved = outboxRepository.save(event);
+        OutboxEventEntity reloaded = outboxRepository.findById(saved.getId()).orElseThrow();
+
+        assertThat(reloaded.getTraceId()).isEqualTo("trace-outbox-1001");
+        assertThat(reloaded.getRequestId()).isEqualTo("req-outbox-1001");
+        assertThat(reloaded.getHeadersJson()).contains("\"X-Trace-Id\":\"trace-outbox-1001\"");
+        assertThat(reloaded.getHeadersJson()).contains("\"X-Request-Id\":\"req-outbox-1001\"");
+    }
+
     private ContentDraftEntity createDraft(String bizNo) {
         ContentDraftEntity draft = new ContentDraftEntity();
         draft.setBizNo(bizNo);
@@ -337,6 +367,8 @@ class PersistenceLayerTest {
         event.setRoutingKey("workflow.content.published");
         event.setPayloadJson("{\"eventId\":\"" + eventId + "\"}");
         event.setHeadersJson("{}");
+        event.setTraceId("trace-" + eventId);
+        event.setRequestId("request-" + eventId);
         event.setStatus(OutboxEventStatus.FAILED);
         event.setAttempt(1);
         event.setCreatedAt(createdAt);

@@ -1,10 +1,14 @@
 package com.contentworkflow.common.messaging.outbox;
 
+import com.contentworkflow.common.logging.WorkflowLogContext;
 import com.contentworkflow.common.messaging.WorkflowEvent;
 import com.contentworkflow.common.messaging.WorkflowEventPublisher;
 import com.contentworkflow.common.messaging.WorkflowMessagingProperties;
+import com.contentworkflow.common.messaging.WorkflowMessagingTraceContext;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.util.Map;
 
 /**
  * 发布器组件，用于封装事件构建、消息投递或 outbox 发布逻辑。
@@ -43,6 +47,7 @@ public class OutboxWorkflowEventPublisher implements WorkflowEventPublisher {
 
     @Override
     public void publish(WorkflowEvent event) {
+        Map<String, Object> outboundHeaders = WorkflowMessagingTraceContext.enrichOutboundHeaders(event.headers());
         OutboxEventEntity row = new OutboxEventEntity();
         row.setEventId(event.eventId());
         row.setEventType(event.eventType());
@@ -61,9 +66,28 @@ public class OutboxWorkflowEventPublisher implements WorkflowEventPublisher {
         // createdAt/updatedAt defaults are filled by the repository before insert.
 
         row.setPayloadJson(toJsonQuietly(event.payload()));
-        row.setHeadersJson(toJsonQuietly(event.headers()));
+        row.setHeadersJson(toJsonQuietly(outboundHeaders));
+        row.setTraceId(headerValue(outboundHeaders, WorkflowLogContext.TRACE_ID_HEADER, WorkflowLogContext.TRACE_ID_KEY));
+        row.setRequestId(headerValue(outboundHeaders, WorkflowLogContext.REQUEST_ID_HEADER, WorkflowLogContext.REQUEST_ID_KEY));
 
         enqueuer.enqueue(row);
+    }
+
+    private String headerValue(Map<String, Object> headers, String... keys) {
+        if (headers == null || headers.isEmpty()) {
+            return null;
+        }
+        for (String key : keys) {
+            Object value = headers.get(key);
+            if (value == null) {
+                continue;
+            }
+            String normalized = String.valueOf(value).trim();
+            if (!normalized.isEmpty()) {
+                return normalized;
+            }
+        }
+        return null;
     }
 
     /**

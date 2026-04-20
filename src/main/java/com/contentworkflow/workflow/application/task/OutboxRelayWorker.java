@@ -1,5 +1,7 @@
 package com.contentworkflow.workflow.application.task;
 
+import com.contentworkflow.common.logging.WorkflowLogContext;
+import com.contentworkflow.common.logging.WorkflowLogScope;
 import com.contentworkflow.common.messaging.WorkflowMessagingProperties;
 import com.contentworkflow.common.messaging.outbox.OutboxEventEntity;
 import com.contentworkflow.common.messaging.outbox.OutboxEventRepository;
@@ -70,11 +72,18 @@ public class OutboxRelayWorker {
         int batchSize = Math.max(1, props.getRelay().getBatchSize());
         int lockSeconds = Math.max(5, props.getRelay().getLockSeconds());
         LocalDateTime lockExpiredBefore = now.minusSeconds(lockSeconds);
-
-        // Do not send MQ messages inside the same DB transaction as outbox state changes.
-        List<ClaimedEvent> claimed = claimBatch(now, lockExpiredBefore, batchSize);
-        for (ClaimedEvent e : claimed) {
-            deliverOne(e, now);
+        try (WorkflowLogScope ignored = WorkflowLogContext.open(
+                WorkflowLogContext.resolveSnapshot(
+                        WorkflowLogContext.currentTraceId(),
+                        WorkflowLogContext.currentRequestId(),
+                        "loop-trace:outbox-relay-worker:" + workerId + ":" + now,
+                        "loop-request:outbox-relay-worker:" + workerId + ":" + now
+                ))) {
+            // Do not send MQ messages inside the same DB transaction as outbox state changes.
+            List<ClaimedEvent> claimed = claimBatch(now, lockExpiredBefore, batchSize);
+            for (ClaimedEvent e : claimed) {
+                deliverOne(e, now);
+            }
         }
     }
 
@@ -130,12 +139,25 @@ public class OutboxRelayWorker {
      */
 
     protected void deliverOne(ClaimedEvent e, LocalDateTime now) {
-        try {
-            Message msg = toMessage(e);
-            rabbitTemplate.send(e.exchangeName(), e.routingKey(), msg);
-            markSent(e.id(), now);
-        } catch (Exception ex) {
-            markFailedOrDead(e.id(), now, ex);
+        Map<String, Object> headers = parseHeaders(e.headersJson());
+        try (WorkflowLogScope ignored = WorkflowLogContext.open(
+                WorkflowLogContext.resolveSnapshot(
+                        headers,
+                        "outbox-event:"
+                                + workerId + ":"
+                                + e.eventId() + ":"
+                                + e.aggregateType() + ":"
+                                + e.aggregateId() + ":"
+                                + e.aggregateVersion(),
+                        "outbox-event-request:" + workerId + ":" + e.eventId()
+                ))) {
+            try {
+                Message msg = toMessage(e, headers);
+                rabbitTemplate.send(e.exchangeName(), e.routingKey(), msg);
+                markSent(e.id(), now);
+            } catch (Exception ex) {
+                markFailedOrDead(e.id(), now, ex);
+            }
         }
     }
 
@@ -212,7 +234,7 @@ public class OutboxRelayWorker {
      * @return 方法处理后的结果对象
      */
 
-    private Message toMessage(ClaimedEvent e) {
+    private Message toMessage(ClaimedEvent e, Map<String, Object> headers) {
         MessageProperties props = new MessageProperties();
         props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
         props.setContentEncoding(StandardCharsets.UTF_8.name());
@@ -225,25 +247,32 @@ public class OutboxRelayWorker {
             props.setHeader("x-aggregate-version", e.aggregateVersion());
         }
 
-        // headersJson is optional; parse failures must not break delivery.
-        if (e.headersJson() != null && !e.headersJson().isBlank()) {
-            try {
-                Map<String, Object> headers = objectMapper.readValue(e.headersJson(), new TypeReference<>() {
-                });
-                if (headers != null) {
-                    for (Map.Entry<String, Object> entry : headers.entrySet()) {
-                        if (entry.getKey() != null) {
-                            props.setHeader(entry.getKey(), entry.getValue());
-                        }
-                    }
-                }
-            } catch (Exception ignored) {
-                // ignore
+        Map<String, Object> resolvedHeaders = WorkflowLogContext.appendHeaders(
+                headers,
+                "outbox-message:" + e.eventId(),
+                "outbox-message-request:" + e.eventId()
+        );
+        for (Map.Entry<String, Object> entry : resolvedHeaders.entrySet()) {
+            if (entry.getKey() != null) {
+                props.setHeader(entry.getKey(), entry.getValue());
             }
         }
 
         byte[] body = (e.payloadJson() == null ? "{}" : e.payloadJson()).getBytes(StandardCharsets.UTF_8);
         return new Message(body, props);
+    }
+
+    private Map<String, Object> parseHeaders(String headersJson) {
+        if (headersJson == null || headersJson.isBlank()) {
+            return Map.of();
+        }
+        try {
+            Map<String, Object> headers = objectMapper.readValue(headersJson, new TypeReference<>() {
+            });
+            return headers == null ? Map.of() : headers;
+        } catch (Exception ignored) {
+            return Map.of();
+        }
     }
 
     /**

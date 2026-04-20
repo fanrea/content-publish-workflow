@@ -38,8 +38,10 @@ import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Primary
 @Component
@@ -104,6 +106,8 @@ public class MybatisWorkflowStore implements WorkflowStore {
 
     @Override
     @Transactional(readOnly = true)
+    @Cacheable(cacheNames = CacheNames.DRAFT_STATUS_COUNT,
+            key = "T(com.contentworkflow.workflow.application.store.MybatisWorkflowStore).draftStatusCountCacheKey(#request)")
     public Map<WorkflowStatus, Long> countDraftsByStatus(DraftQueryRequest request) {
         EnumMap<WorkflowStatus, Long> result = new EnumMap<>(WorkflowStatus.class);
         for (DraftStatusCountRow row : draftMapper.countByStatus(normalizeRequest(request))) {
@@ -144,15 +148,15 @@ public class MybatisWorkflowStore implements WorkflowStore {
     @Transactional(readOnly = true)
     @Cacheable(cacheNames = CacheNames.DRAFT_DETAIL_BY_ID,
             key = "T(com.contentworkflow.common.cache.CacheKeys).draftId(#draftId)",
-            unless = "#result == null || !#result.isPresent()")
+            unless = "#result == null")
     public Optional<ContentDraft> findDraftById(Long draftId) {
-        return draftMapper.selectById(draftId).map(this::toDomain);
+        return Optional.ofNullable(draftMapper.selectById(draftId)).map(this::toDomain);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Optional<DraftOperationLockEntry> findDraftOperationLock(Long draftId) {
-        return operationLockMapper.selectByDraftId(draftId).map(this::toLockEntry);
+        return Optional.ofNullable(operationLockMapper.selectById(draftId)).map(this::toLockEntry);
     }
 
     @Override
@@ -162,14 +166,14 @@ public class MybatisWorkflowStore implements WorkflowStore {
             throw new IllegalArgumentException("lockEntry/draftId required");
         }
         try {
-            return operationLockMapper.insertLock(
-                    lockEntry.getDraftId(),
-                    lockEntry.getOperationType().name(),
-                    lockEntry.getTargetPublishedVersion(),
-                    lockEntry.getLockedBy(),
-                    lockEntry.getLockedAt(),
-                    lockEntry.getExpiresAt()
-            ) > 0;
+            DraftOperationLockEntity entity = new DraftOperationLockEntity();
+            entity.setDraftId(lockEntry.getDraftId());
+            entity.setOperationType(lockEntry.getOperationType());
+            entity.setTargetPublishedVersion(lockEntry.getTargetPublishedVersion());
+            entity.setLockedBy(lockEntry.getLockedBy());
+            entity.setLockedAt(lockEntry.getLockedAt());
+            entity.setExpiresAt(lockEntry.getExpiresAt());
+            return operationLockMapper.insert(entity) > 0;
         } catch (DataIntegrityViolationException ex) {
             return operationLockMapper.replaceExpiredLock(
                     lockEntry.getDraftId(),
@@ -232,9 +236,11 @@ public class MybatisWorkflowStore implements WorkflowStore {
         if (updated == 0) {
             throw resolveConditionalUpdateFailure(draft, requiredStatuses);
         }
-        return draftMapper.selectById(draft.getId())
-                .map(this::toDomain)
-                .orElseThrow(() -> new IllegalStateException("draft not found after update: " + draft.getId()));
+        ContentDraftEntity updatedDraft = draftMapper.selectById(draft.getId());
+        if (updatedDraft == null) {
+            throw new IllegalStateException("draft not found after update: " + draft.getId());
+        }
+        return toDomain(updatedDraft);
     }
 
     @Override
@@ -297,6 +303,8 @@ public class MybatisWorkflowStore implements WorkflowStore {
                     PublishTaskEntity entity = new PublishTaskEntity();
                     entity.setDraftId(task.getDraftId());
                     entity.setPublishedVersion(task.getPublishedVersion());
+                    entity.setTraceId(task.getTraceId());
+                    entity.setRequestId(task.getRequestId());
                     entity.setTaskType(task.getTaskType());
                     entity.setStatus(task.getStatus());
                     entity.setRetryTimes(task.getRetryTimes());
@@ -324,8 +332,10 @@ public class MybatisWorkflowStore implements WorkflowStore {
     @Override
     @Transactional
     public PublishTask updatePublishTask(PublishTask task) {
-        PublishTaskEntity entity = taskMapper.selectById(task.getId())
-                .orElseThrow(() -> new IllegalStateException("task not found: " + task.getId()));
+        PublishTaskEntity entity = taskMapper.selectById(task.getId());
+        if (entity == null) {
+            throw new IllegalStateException("task not found: " + task.getId());
+        }
         entity.setStatus(task.getStatus());
         entity.setRetryTimes(task.getRetryTimes());
         entity.setErrorMessage(task.getErrorMessage());
@@ -333,7 +343,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
         entity.setLockedBy(task.getLockedBy());
         entity.setLockedAt(task.getLockedAt());
         entity.setUpdatedAt(task.getUpdatedAt());
-        taskMapper.update(entity);
+        taskMapper.updateById(entity);
         return toPublishTask(entity);
     }
 
@@ -361,7 +371,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
             entity.setLockedBy(workerId);
             entity.setLockedAt(now);
             entity.setUpdatedAt(now);
-            taskMapper.update(entity);
+            taskMapper.updateById(entity);
         }
         return runnable.stream().map(this::toPublishTask).toList();
     }
@@ -406,7 +416,7 @@ public class MybatisWorkflowStore implements WorkflowStore {
         entity.setSnapshotId(entry.getSnapshotId());
         entity.setErrorMessage(entry.getErrorMessage());
         entity.setUpdatedAt(entry.getUpdatedAt());
-        commandMapper.update(entity);
+        commandMapper.updateById(entity);
         return toCommandEntry(entity);
     }
 
@@ -474,6 +484,28 @@ public class MybatisWorkflowStore implements WorkflowStore {
         return request.normalized();
     }
 
+    public static String draftStatusCountCacheKey(DraftQueryRequest request) {
+        DraftQueryRequest normalized = request == null
+                ? new DraftQueryRequest(null, null, false, 1, 20,
+                DraftQueryRequest.DraftSortBy.UPDATED_AT,
+                DraftQueryRequest.SortDirection.DESC,
+                null, null, null, null)
+                : request.normalized();
+        String statuses = normalized.status() == null
+                ? ""
+                : normalized.status().stream()
+                .map(Enum::name)
+                .sorted()
+                .collect(Collectors.joining(","));
+        return "keyword=" + Objects.toString(normalized.keyword(), "")
+                + "|statuses=" + statuses
+                + "|searchInBody=" + normalized.searchInBody()
+                + "|createdFrom=" + Objects.toString(normalized.createdFrom(), "")
+                + "|createdTo=" + Objects.toString(normalized.createdTo(), "")
+                + "|updatedFrom=" + Objects.toString(normalized.updatedFrom(), "")
+                + "|updatedTo=" + Objects.toString(normalized.updatedTo(), "");
+    }
+
     private String toSortColumn(DraftQueryRequest request) {
         return switch (request.sortBy()) {
             case ID -> "id";
@@ -490,8 +522,10 @@ public class MybatisWorkflowStore implements WorkflowStore {
     }
 
     private RuntimeException resolveConditionalUpdateFailure(ContentDraft draft, EnumSet<WorkflowStatus> expectedStatuses) {
-        ContentDraftEntity current = draftMapper.selectById(draft.getId())
-                .orElseThrow(() -> new IllegalStateException("draft not found: " + draft.getId()));
+        ContentDraftEntity current = draftMapper.selectById(draft.getId());
+        if (current == null) {
+            throw new IllegalStateException("draft not found: " + draft.getId());
+        }
         if (draft.getVersion() == null || !draft.getVersion().equals(current.getVersion())) {
             throw concurrentModification(draft.getId(), draft.getVersion(), current.getVersion());
         }
@@ -568,6 +602,8 @@ public class MybatisWorkflowStore implements WorkflowStore {
                 .id(entity.getId())
                 .draftId(entity.getDraftId())
                 .publishedVersion(entity.getPublishedVersion())
+                .traceId(entity.getTraceId())
+                .requestId(entity.getRequestId())
                 .taskType(entity.getTaskType())
                 .status(entity.getStatus())
                 .retryTimes(entity.getRetryTimes())

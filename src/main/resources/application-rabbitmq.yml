@@ -2,8 +2,9 @@ spring:
   rabbitmq:
     host: ${RABBIT_HOST:127.0.0.1}
     port: ${RABBIT_PORT:5672}
-    username: ${RABBIT_USER:guest}
-    password: ${RABBIT_PASSWORD:guest}
+    # Keep defaults aligned with compose.local.yml to avoid guest loopback restrictions.
+    username: ${RABBIT_USER:cpw}
+    password: ${RABBIT_PASSWORD:cpw}
     virtual-host: ${RABBIT_VHOST:/}
     publisher-confirm-type: correlated
     publisher-returns: true

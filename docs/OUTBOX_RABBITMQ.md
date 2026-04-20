@@ -1,66 +1,111 @@
-# Outbox 与 RabbitMQ 说明
+# Outbox And RabbitMQ Guide
 
-这份文档解释项目中的异步消息链路为什么存在、如何工作，以及它和发布主链路之间的关系。
+这份文档面向本地联调，重点解释三个问题：
 
-## 一、为什么要有 Outbox
+1. 为什么项目里有 outbox。
+2. RabbitMQ 相关功能默认为什么看起来“没动静”。
+3. 真正要联调消息链路时，应该开哪些开关。
 
-如果在发布主事务里直接发 MQ，会有一个经典问题：
+## 先说项目里的真实语义
 
-- 数据库事务提交成功，但 MQ 发送失败
+数据库是业务事实源，RabbitMQ 不是。
+
+当前项目里，发布后的异步副作用不会在主事务里直接发 MQ，而是走 outbox：
+
+1. 主事务把业务数据和 outbox 事件一起落库
+2. relay worker 轮询 `workflow_outbox_event`
+3. relay 再把事件投递到 RabbitMQ
+
+这样做的目的是避免：
+
+- 数据库提交成功，但 MQ 发送失败
 - MQ 发送成功，但数据库事务回滚
 
-这两种情况都会让系统进入难以恢复的不一致状态。
+## 默认为什么看不到 MQ 消息
 
-Outbox 模式的核心思路是：
+因为 `rabbitmq` profile 只接上 MQ 连接参数，不会默认把 relay 打开。
 
-1. 主事务里只写数据库和 outbox 表
-2. 不在主事务里直接发 MQ
-3. 由独立 relay worker 再去投递 MQ
+当前默认语义是：
 
-这样主事务只需要保证一件事：
+- `workflow.outbox.enabled=true`
+- `workflow.outbox.relay.enabled=false`
+- `workflow.outbox.topology.consumer.enabled=false`
 
-“业务数据和待发送事件同时可靠落库。”
+所以常见现象是：
 
-## 二、当前实现结构
+- 发布动作后 outbox 表里有事件
+- 但 RabbitMQ 里没有消息
 
-项目的消息链路主要由以下部分组成：
+这通常不是 bug，而是 relay 没开。
 
-- `WorkflowEvent`
-- `WorkflowEventPublisher`
-- `OutboxWorkflowEventPublisher`
-- `OutboxEventEntity`
-- `OutboxEventRepository`
-- `OutboxRelayWorker`
-- `WorkflowSideEffectConsumerService`
-- `WorkflowMessageDeduplicationGuard`
+## 本地联调最小步骤
 
-## 三、事件是何时产生的
+### 1. 启动 RabbitMQ
 
-当前系统在以下场景会产出工作流事件：
+```powershell
+docker compose -f compose.local.yml up -d rabbitmq
+```
 
-- 发布成功
-- 发布失败
-- 搜索刷新请求
-- 读模型同步请求
-- 发布通知请求
+默认账号：
 
-这些事件最终会被持久化到 `workflow_outbox_event` 表。
+- User: `cpw`
+- Password: `cpw`
+- UI: [http://127.0.0.1:15672](http://127.0.0.1:15672)
 
-## 四、Outbox 表的职责
+### 2. 打开 RabbitMQ profile
 
-`workflow_outbox_event` 不是普通日志表，而是一个“待投递消息队列表”。
+```powershell
+$env:SPRING_PROFILES_ACTIVE="rabbitmq"
+```
 
-它至少需要保存：
+### 3. 真正开启 relay
+
+```powershell
+$env:WORKFLOW_OUTBOX_RELAY_ENABLED="true"
+```
+
+### 4. 启动应用
+
+```powershell
+mvn spring-boot:run
+```
+
+如果你还想同时本地登录和看 actuator，常见组合是：
+
+```powershell
+$env:SPRING_PROFILES_ACTIVE="redis,rabbitmq,demo,ops"
+$env:WORKFLOW_OUTBOX_RELAY_ENABLED="true"
+mvn spring-boot:run
+```
+
+## 消费端为什么默认也没开
+
+因为这个项目把“生产事件”和“消费副作用”拆开了，避免你本地联调时一次性把变量拉满。
+
+默认：
+
+- 生产端可以落 outbox
+- relay 可以按需开启
+- consumer 仍然是关闭的
+
+如果你要把消费端也一起打通，再开：
+
+```powershell
+$env:WORKFLOW_OUTBOX_TOPOLOGY_CONSUMER_ENABLED="true"
+```
+
+## outbox 表里你应该看到什么
+
+核心字段通常包括：
 
 - `event_id`
 - `event_type`
 - `aggregate_type`
 - `aggregate_id`
-- `aggregate_version`
-- `exchange_name`
-- `routing_key`
 - `payload_json`
 - `headers_json`
+- `trace_id`
+- `request_id`
 - `status`
 - `attempt`
 - `next_retry_at`
@@ -68,7 +113,7 @@ Outbox 模式的核心思路是：
 - `locked_at`
 - `error_message`
 
-状态包括：
+状态流转大致是：
 
 - `NEW`
 - `SENDING`
@@ -76,134 +121,73 @@ Outbox 模式的核心思路是：
 - `FAILED`
 - `DEAD`
 
-## 五、投递流程
+## 本地排障顺序
 
-完整流程如下：
+### 1. outbox 有记录，但 RabbitMQ 没消息
 
-1. 业务代码创建 `WorkflowEvent`
-2. `OutboxWorkflowEventPublisher` 把事件序列化为 `OutboxEventEntity`
-3. 主事务提交时，事件和业务数据一起落库
-4. `OutboxRelayWorker` 周期性领取可发送事件
-5. 事件状态切到 `SENDING`
-6. worker 调用 `RabbitTemplate` 发送消息
-7. 发送成功则标记为 `SENT`
-8. 发送失败则进入 `FAILED`，并带上退避重试时间
-9. 超过最大重试次数则进入 `DEAD`
+先查：
 
-## 六、为什么还需要锁和重试
+- 是否开了 `rabbitmq` profile
+- 是否设置了 `WORKFLOW_OUTBOX_RELAY_ENABLED=true`
+- worker 是否在跑
+- 事件状态是不是一直停在 `NEW`
 
-因为系统可能有多个 worker 实例同时运行，如果不做领取和锁定控制，就会发生重复发送。
+### 2. 事件一直在 `FAILED`
 
-所以 outbox 表设计了：
+常见原因：
 
-- `locked_by`
-- `locked_at`
-- `next_retry_at`
+- RabbitMQ 连不上
+- 交换机或路由键配置错误
+- broker 在线，但声明拓扑失败
 
-它们分别用来解决：
+优先看：
 
-- 谁领取了这条消息
-- 何时领取的
-- 失败后什么时候可以再次重试
+- 应用日志
+- RabbitMQ 管理台
+- outbox 表中的 `error_message`
 
-## 七、RabbitMQ 在项目中的位置
+### 3. 事件进了 `DEAD`
 
-RabbitMQ 在当前项目里扮演的是“异步副作用总线”的角色，而不是主业务事实来源。
+这说明重试次数已经打满。
 
-也就是说：
+当前项目支持恢复和人工重试，排障时先确认：
 
-- 事实来源仍然是数据库
-- RabbitMQ 负责把异步动作通知给外部消费者
+- 根因是否已经修复
+- 重试后是否还会继续失败
 
-当前拓扑支持的典型队列有：
+### 4. 怀疑重复发送
 
-- 搜索索引刷新队列
-- 读模型同步队列
-- 发布通知队列
+先分清：
 
-## 八、消费端做了什么
+- 是同一条 outbox 事件被重复发送
+- 还是同一业务动作本来就产生了多条事件
 
-消费端目前的工程能力已经接好，重点包括：
+如果是 worker 层面重复触发，先排查调度模式是否混成了本地 `@Scheduled` 和 XXL-Job 同时开启。
 
-- 监听入口
-- 消费防重
-- 消费审计日志
-- 调用副作用网关
+## 和调度的关系
 
-目前下游网关还是 stub 或接缝实现，但整个工程链路已经存在。
+outbox relay 本身也是 worker 轮询任务。
 
-## 九、消费防重
+所以它的推进方式和 publish task 一样，会受调度模式影响：
 
-消息系统里常见问题不是“收不到”，而是“可能重复收到”。
+- 默认模式下，靠本地 `@Scheduled`
+- `xxl-job` profile 下，靠 `workflowOutboxRelayJob`
 
-项目使用 `WorkflowMessageDeduplicationGuard` 结合缓存做了一层轻量去重：
+如果 relay 明明开了但不推进，除了 RabbitMQ 本身，还要看调度是否真的在触发。
 
-- 如果 `messageId` 没处理过，则允许消费
-- 如果已处理过，则跳过重复消费
+## 本地联调建议
 
-这层防重不是严格分布式事务，但足够支撑当前演示和常见重放问题。
+不要一开始就同时打开所有东西。
 
-## 十、如何启用
+更稳的顺序是：
 
-启用 RabbitMQ 相关能力需要分几层看：
+1. 先只跑 MySQL，确认主业务接口能走通
+2. 再加 `demo`，确认能登录拿 token
+3. 再加 `rabbitmq`
+4. 再打开 relay
+5. 最后再决定要不要把 consumer 和 XXL-Job 一起带上
 
-### 1. 打开 profile
+## 相关文档
 
-```bash
-SPRING_PROFILES_ACTIVE=rabbitmq
-```
-
-### 2. 打开 outbox 持久化
-
-```yaml
-workflow:
-  outbox:
-    enabled: true
-```
-
-### 3. 打开 relay
-
-```yaml
-workflow:
-  outbox:
-    relay:
-      enabled: true
-```
-
-### 4. 如需消费端，再单独打开 consumer
-
-当前默认 consumer 也是关闭的。
-
-## 十一、失败与恢复
-
-### 1. 失败状态
-
-发送失败的 outbox 事件会进入：
-
-- `FAILED`
-- 或 `DEAD`
-
-### 2. 人工恢复
-
-项目提供了恢复接口：
-
-- `GET /outbox/events/recovery`
-- `POST /outbox/events/{outboxEventId}/manual-retry`
-
-恢复时会把事件重新置为：
-
-- `status=NEW`
-- `attempt=0`
-- 清空锁和错误信息
-
-## 十二、这个设计的价值
-
-这套设计的价值在于：
-
-- 主事务与消息发送解耦
-- 可重试
-- 可追踪
-- 可人工恢复
-- 容易讲清楚最终一致性
-
-对于一个工作流系统来说，这比“发布时直接调三个外部接口”要稳健得多。
+- `docs/OPERATIONS.md`
+- `docs/TESTING.md`

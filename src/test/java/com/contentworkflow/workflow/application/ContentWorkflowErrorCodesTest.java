@@ -1,6 +1,7 @@
 package com.contentworkflow.workflow.application;
 
 import com.contentworkflow.common.exception.BusinessException;
+import com.contentworkflow.workflow.application.store.InMemoryWorkflowStore;
 import com.contentworkflow.workflow.interfaces.dto.CreateDraftRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -22,7 +23,7 @@ class ContentWorkflowErrorCodesTest {
 
     @BeforeEach
     void setUp() {
-        service = new InMemoryContentWorkflowService();
+        service = new ContentWorkflowApplicationService(new InMemoryWorkflowStore());
     }
 
     /**
@@ -48,4 +49,3 @@ class ContentWorkflowErrorCodesTest {
         assertCode(ex, "DRAFT_NOT_FOUND");
     }
 }
-

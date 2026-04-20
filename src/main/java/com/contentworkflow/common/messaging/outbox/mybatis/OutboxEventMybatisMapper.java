@@ -1,5 +1,6 @@
 package com.contentworkflow.common.messaging.outbox.mybatis;
 
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.contentworkflow.common.messaging.outbox.OutboxEventEntity;
 import com.contentworkflow.common.messaging.outbox.OutboxEventStatus;
 import org.apache.ibatis.annotations.Mapper;
@@ -8,16 +9,9 @@ import org.apache.ibatis.annotations.Param;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
-import java.util.Optional;
 
 @Mapper
-public interface OutboxEventMybatisMapper {
-
-    Optional<OutboxEventEntity> selectById(Long id);
-
-    int insert(OutboxEventEntity entity);
-
-    int update(OutboxEventEntity entity);
+public interface OutboxEventMybatisMapper extends BaseMapper<OutboxEventEntity> {
 
     List<OutboxEventEntity> selectClaimCandidates(@Param("statuses") Collection<OutboxEventStatus> statuses,
                                                   @Param("now") LocalDateTime now,

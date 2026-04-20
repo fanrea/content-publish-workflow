@@ -8,6 +8,7 @@ import com.contentworkflow.workflow.domain.entity.ReviewRecord;
 import com.contentworkflow.workflow.domain.enums.PublishTaskStatus;
 import com.contentworkflow.workflow.domain.enums.WorkflowStatus;
 import com.contentworkflow.workflow.interfaces.dto.DraftQueryRequest;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
@@ -25,8 +26,10 @@ import java.util.stream.Collectors;
 
 /**
  * 存储抽象，用于统一封装业务对象的持久化读写与查询访问。
+ * Dev/test-only WorkflowStore implementation backed by in-memory collections.
  */
 @Component
+@Profile({"dev", "test"})
 public class InMemoryWorkflowStore implements WorkflowStore {
 
     private final Map<Long, ContentDraft> drafts = new ConcurrentHashMap<>();
@@ -322,7 +325,7 @@ public class InMemoryWorkflowStore implements WorkflowStore {
         }
         Long draftId = task.getDraftId();
         if (draftId == null) {
-            // Fallback to a full scan in the in-memory demo store when draftId is absent.
+            // Dev/test store fallback when task fixtures were created without a draftId reference.
             draftId = tasks.entrySet().stream()
                     .filter(e -> e.getValue().stream().anyMatch(t -> task.getId().equals(t.getId())))
                     .map(Map.Entry::getKey)
@@ -375,7 +378,7 @@ public class InMemoryWorkflowStore implements WorkflowStore {
         }
         LocalDateTime lockExpiredBefore = now.minusSeconds(Math.max(1, lockSeconds));
 
-        // In-memory claim (best-effort): select runnable tasks and mark them RUNNING in place.
+        // Best-effort dev/test claim: select runnable tasks and mark them RUNNING in place.
         List<PublishTask> candidates = tasks.values().stream()
                 .flatMap(List::stream)
                 .filter(t -> t.getStatus() == PublishTaskStatus.PENDING || t.getStatus() == PublishTaskStatus.FAILED)
@@ -517,7 +520,7 @@ public class InMemoryWorkflowStore implements WorkflowStore {
         String key = commandKey(entry.getDraftId(), entry.getCommandType(), entry.getIdempotencyKey());
         PublishCommandEntry existing = publishCommands.get(key);
         if (existing == null) {
-            // In-memory demo: if missing, create it to keep the flow going in tests.
+            // Tests may seed commands indirectly, so materialize the missing entry on demand.
             tryCreatePublishCommand(entry);
             return publishCommands.get(key);
         }

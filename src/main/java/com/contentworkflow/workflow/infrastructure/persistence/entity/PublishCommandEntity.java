@@ -1,5 +1,8 @@
 package com.contentworkflow.workflow.infrastructure.persistence.entity;
 
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -9,8 +12,10 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 @NoArgsConstructor
+@TableName("content_publish_command")
 public class PublishCommandEntity {
 
+    @TableId(type = IdType.AUTO)
     private Long id;
     private Long draftId;
     private String commandType;

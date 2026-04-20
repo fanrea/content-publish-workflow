@@ -31,7 +31,7 @@ class WorkflowSideEffectEventLoggingListenerTest {
     @BeforeEach
     void setUp() {
         store = new InMemoryWorkflowStore();
-        seedDraftAndTask();
+        prepareDraftAndTaskFixture();
         objectMapper = new ObjectMapper().findAndRegisterModules();
 
         readModelGatewayCalls = new AtomicInteger();
@@ -86,7 +86,7 @@ class WorkflowSideEffectEventLoggingListenerTest {
         assertEquals(WorkflowStatus.PUBLISHED, store.findDraftById(1L).orElseThrow().getStatus());
     }
 
-    private void seedDraftAndTask() {
+    private void prepareDraftAndTaskFixture() {
         ContentDraft draft = ContentDraft.builder()
                 .bizNo("CPW-1")
                 .title("title")

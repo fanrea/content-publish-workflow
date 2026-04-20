@@ -16,6 +16,8 @@ public final class PublishTaskMapper {
                 .id(e.getId())
                 .draftId(e.getDraftId())
                 .publishedVersion(e.getPublishedVersion())
+                .traceId(e.getTraceId())
+                .requestId(e.getRequestId())
                 .taskType(e.getTaskType())
                 .status(e.getStatus())
                 .retryTimes(e.getRetryTimes())
@@ -36,6 +38,8 @@ public final class PublishTaskMapper {
         e.setId(d.getId());
         e.setDraftId(d.getDraftId());
         e.setPublishedVersion(d.getPublishedVersion());
+        e.setTraceId(d.getTraceId());
+        e.setRequestId(d.getRequestId());
         e.setTaskType(d.getTaskType());
         e.setStatus(d.getStatus());
         e.setRetryTimes(d.getRetryTimes());

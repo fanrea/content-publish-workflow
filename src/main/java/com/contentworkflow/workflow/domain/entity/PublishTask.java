@@ -17,6 +17,8 @@ public class PublishTask {
     private Long id;
     private Long draftId;
     private Integer publishedVersion;
+    private String traceId;
+    private String requestId;
     private PublishTaskType taskType;
     private PublishTaskStatus status;
     private Integer retryTimes;

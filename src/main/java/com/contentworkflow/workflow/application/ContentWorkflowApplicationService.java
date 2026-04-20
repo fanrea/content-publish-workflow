@@ -2,8 +2,10 @@ package com.contentworkflow.workflow.application;
 
 import com.contentworkflow.common.api.PageResponse;
 import com.contentworkflow.common.exception.BusinessException;
+import com.contentworkflow.common.logging.WorkflowLogContext;
+import com.contentworkflow.common.web.auth.WorkflowAuditContext;
+import com.contentworkflow.common.web.auth.WorkflowAuditContextHolder;
 import com.contentworkflow.common.web.auth.WorkflowOperatorIdentity;
-import com.contentworkflow.workflow.application.store.InMemoryWorkflowStore;
 import com.contentworkflow.workflow.application.store.DraftOperationLockEntry;
 import com.contentworkflow.workflow.application.store.PublishCommandEntry;
 import com.contentworkflow.workflow.application.store.PublishLogEntry;
@@ -43,7 +45,6 @@ import com.contentworkflow.workflow.interfaces.vo.PublishTaskResponse;
 import com.contentworkflow.workflow.interfaces.vo.ReviewRecordResponse;
 import com.contentworkflow.workflow.interfaces.vo.WorkflowActionResponse;
 import jakarta.annotation.PostConstruct;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -62,7 +63,7 @@ import java.util.Objects;
  */
 
 @Service
-public class InMemoryContentWorkflowService implements ContentWorkflowService {
+public class ContentWorkflowApplicationService implements ContentWorkflowService {
 
     private final WorkflowStore store;
 
@@ -74,8 +75,8 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
     /**
      * 创建当前类型实例，并注入运行该组件所需的依赖或初始化参数。
      */
-    public InMemoryContentWorkflowService() {
-        this(new InMemoryWorkflowStore());
+    public ContentWorkflowApplicationService(WorkflowStore store) {
+        this.store = store;
     }
 
     /**
@@ -84,28 +85,25 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
      * @param store 参数 store 对应的业务输入值
      */
 
-    @Autowired
-    public InMemoryContentWorkflowService(WorkflowStore store) {
-        this.store = store;
-    }
 
-    @Value("${workflow.demo.seedDraft:false}")
-    private boolean seedDraft;
+    // Prefer workflow.bootstrap.seedDraft and keep the legacy key as a fallback for compatibility.
+    @Value("${workflow.bootstrap.seedDraft:${workflow.demo.seedDraft:false}}")
+    private boolean bootstrapSeedDraft;
 
     @Value("${workflow.draft.operationLockSeconds:1800}")
     private int draftOperationLockSeconds;
 
     /**
      * 处理 init 相关逻辑，并返回对应的执行结果。
+     * Seeds a bootstrap draft for local verification when explicitly enabled.
      */
-
     @PostConstruct
-    public void init() {
-        if (seedDraft) {
+    public void seedBootstrapDraftIfEnabled() {
+        if (bootstrapSeedDraft) {
             createDraft(new CreateDraftRequest(
                     "Course Release Workflow Design",
-                    "Seed draft for immediate API demo.",
-                    "This seeded draft is created at startup to make the workflow easy to try."
+                    "Bootstrap draft for local workflow verification.",
+                    "This draft is inserted at startup to verify the workflow end-to-end in a local environment."
             ), WorkflowOperatorIdentity.system());
         }
     }
@@ -566,17 +564,7 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
             EnumSet<PublishTaskType> taskTypes = resolvePublishTaskTypes(diff);
             List<PublishTask> tasks = new ArrayList<>(taskTypes.size());
             for (PublishTaskType taskType : taskTypes) {
-                tasks.add(PublishTask.builder()
-                        .draftId(draftId)
-                        .publishedVersion(nextPublishedVersion)
-                        .taskType(taskType)
-                        // Publish only persists tasks and moves the draft to PUBLISHING; workers execute asynchronously.
-                        .status(PublishTaskStatus.PENDING)
-                        .retryTimes(0)
-                        .nextRunAt(now)
-                        .createdAt(now)
-                        .updatedAt(now)
-                        .build());
+                tasks.add(newPublishTask(draftId, nextPublishedVersion, taskType, now));
             }
             store.insertPublishTasks(tasks);
             tasksCreated = true;
@@ -708,16 +696,7 @@ public class InMemoryContentWorkflowService implements ContentWorkflowService {
 
             List<PublishTask> tasks = new ArrayList<>();
             for (PublishTaskType taskType : PublishTaskType.values()) {
-                tasks.add(PublishTask.builder()
-                        .draftId(draftId)
-                        .publishedVersion(nextPublishedVersion)
-                        .taskType(taskType)
-                        .status(PublishTaskStatus.PENDING)
-                        .retryTimes(0)
-                        .nextRunAt(now)
-                        .createdAt(now)
-                        .updatedAt(now)
-                        .build());
+                tasks.add(newPublishTask(draftId, nextPublishedVersion, taskType, now));
             }
             store.insertPublishTasks(tasks);
             tasksCreated = true;
@@ -1821,6 +1800,27 @@ private PublishLogResponse toPublishLogResponse(PublishLogEntry entry) {
             entry.getRemark(),
             entry.getCreatedAt()
     );
+}
+
+private PublishTask newPublishTask(Long draftId,
+                                   Integer publishedVersion,
+                                   PublishTaskType taskType,
+                                   LocalDateTime now) {
+    WorkflowAuditContext auditContext = WorkflowAuditContextHolder.get();
+    String traceId = auditContext == null ? WorkflowLogContext.currentTraceId() : auditContext.traceId();
+    String requestId = auditContext == null ? WorkflowLogContext.currentRequestId() : auditContext.requestId();
+    return PublishTask.builder()
+            .draftId(draftId)
+            .publishedVersion(publishedVersion)
+            .traceId(traceId)
+            .requestId(requestId)
+            .taskType(taskType)
+            .status(PublishTaskStatus.PENDING)
+            .retryTimes(0)
+            .nextRunAt(now)
+            .createdAt(now)
+            .updatedAt(now)
+            .build();
 }
 
 /**

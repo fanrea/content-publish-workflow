@@ -42,7 +42,7 @@ class ContentWorkflowStateMachineTest {
     @BeforeEach
     void setUp() {
         store = new InMemoryWorkflowStore();
-        service = new InMemoryContentWorkflowService(store);
+        service = new ContentWorkflowApplicationService(store);
     }
 
     /**

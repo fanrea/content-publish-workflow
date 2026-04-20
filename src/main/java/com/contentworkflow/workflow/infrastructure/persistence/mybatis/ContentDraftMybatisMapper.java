@@ -1,5 +1,7 @@
 package com.contentworkflow.workflow.infrastructure.persistence.mybatis;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.contentworkflow.workflow.domain.enums.WorkflowStatus;
 import com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftEntity;
 import com.contentworkflow.workflow.interfaces.dto.DraftQueryRequest;
@@ -12,13 +14,19 @@ import java.util.List;
 import java.util.Optional;
 
 @Mapper
-public interface ContentDraftMybatisMapper {
+public interface ContentDraftMybatisMapper extends BaseMapper<ContentDraftEntity> {
 
-    Optional<ContentDraftEntity> selectById(Long id);
+    default Optional<ContentDraftEntity> selectByBizNo(String bizNo) {
+        LambdaQueryWrapper<ContentDraftEntity> query = new LambdaQueryWrapper<ContentDraftEntity>()
+                .eq(ContentDraftEntity::getBizNo, bizNo)
+                .last("limit 1");
+        return Optional.ofNullable(selectOne(query));
+    }
 
-    Optional<ContentDraftEntity> selectByBizNo(String bizNo);
-
-    List<ContentDraftEntity> selectAllOrderByUpdatedAtDesc();
+    default List<ContentDraftEntity> selectAllOrderByUpdatedAtDesc() {
+        return selectList(new LambdaQueryWrapper<ContentDraftEntity>()
+                .orderByDesc(ContentDraftEntity::getUpdatedAt, ContentDraftEntity::getId));
+    }
 
     List<ContentDraftEntity> selectPage(@Param("request") DraftQueryRequest request,
                                            @Param("offset") int offset,
@@ -29,8 +37,6 @@ public interface ContentDraftMybatisMapper {
     long countPage(@Param("request") DraftQueryRequest request);
 
     List<DraftStatusCountRow> countByStatus(@Param("request") DraftQueryRequest request);
-
-    int insert(ContentDraftEntity entity);
 
     int conditionalUpdate(@Param("id") Long id,
                           @Param("expectedVersion") Long expectedVersion,

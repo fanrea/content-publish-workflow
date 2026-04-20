@@ -1,16 +1,105 @@
-# 项目逻辑与源码导读
+# 源码导读
 
-这份文档专门给第一次接手项目的人看。
+这份文档面向第一次接手 `content-publish-workflow` 的开发者，目标不是“把所有类逐个念一遍”，而是帮助你尽快建立一张稳定的项目心智地图：
 
-目标不是把所有类都讲一遍，而是帮助你快速建立下面三件事的心智模型：
+1. 这个系统真正的主线入口在哪。
+2. HTTP 请求、发布任务、Outbox、恢复能力分别怎么串起来。
+3. 哪些类是“改需求时第一站”，哪些类只是配套设施。
+4. 当前代码库里哪些说法已经过时，读源码时不要再被旧认知带偏。
 
-1. 代码目录怎么分层，每层到底负责什么。
-2. 一次请求会依次经过哪些关键类。
-3. 发布、回滚、恢复、消息投递这些“看起来很散”的逻辑，源码里到底是怎样串起来的。
+先说结论：当前项目的主线已经不是旧文档里的 `InMemoryContentWorkflowService` + JPA 风格实现。现在真正应该抓住的骨架是：
 
-如果你刚入组，建议把这份文档当成“源码地图”。看代码时不要一上来就全局搜索所有类名，而是先按这里给的顺序走一遍。
+- 业务编排中枢：`ContentWorkflowApplicationService`
+- 正式持久化主线：`WorkflowStore` -> `MybatisWorkflowStore` -> MyBatis Mapper/XML -> MySQL
+- 认证与权限：`WorkflowSecurityConfig` -> `WorkflowJwtAuthenticationFilter` -> `WorkflowAuthorizationInterceptor`
+- 缓存：`RedisCacheConfig` -> `TwoLevelCacheManager` -> `TwoLevelCache`
+- 任务编排：`PublishTaskWorker` + `PublishTaskProgressService`
+- 可靠事件投递：`OutboxWorkflowEventPublisher` + `MybatisOutboxEventRepository` + `OutboxRelayWorker`
+- 下游消费确认：`WorkflowSideEffectEventLoggingListener` + `WorkflowSideEffectConsumerService`
+- 恢复与人工介入：`WorkflowRecoveryService` + `WorkflowReconciliationService`
+- 调度切换：本地 `@Scheduled` 与 `XXL-Job` 二选一/可切换
+- 观测：`WorkflowTraceLoggingFilter` + `WorkflowLogContext` + MDC 全链路传播
 
-## 一、先看目录，而不是先看实现细节
+如果你的时间非常有限，先按下面 8 个文件读，能最快建立全局图：
+
+1. `src/main/java/com/contentworkflow/ContentPublishWorkflowApplication.java`
+2. `src/main/java/com/contentworkflow/workflow/interfaces/ContentWorkflowController.java`
+3. `src/main/java/com/contentworkflow/workflow/application/ContentWorkflowApplicationService.java`
+4. `src/main/java/com/contentworkflow/workflow/application/store/WorkflowStore.java`
+5. `src/main/java/com/contentworkflow/workflow/application/store/MybatisWorkflowStore.java`
+6. `src/main/java/com/contentworkflow/workflow/application/task/PublishTaskWorker.java`
+7. `src/main/java/com/contentworkflow/workflow/application/task/PublishTaskProgressService.java`
+8. `src/main/java/com/contentworkflow/common/messaging/outbox/OutboxWorkflowEventPublisher.java`
+
+---
+
+## 1. 推荐阅读顺序
+
+### 1.1 第一轮：先建立“系统在跑什么”
+
+推荐顺序：
+
+1. `ContentPublishWorkflowApplication`
+2. `ContentWorkflowController`
+3. `WorkflowAuthenticationController`
+4. `ContentWorkflowApplicationService`
+5. `PublishTaskWorker`
+6. `PublishTaskProgressService`
+7. `OutboxRelayWorker`
+8. `WorkflowRecoveryService`
+
+第一轮只回答 4 个问题：
+
+- 一个 HTTP 请求如何进来、走到哪里结束。
+- 一次 publish 为什么不会在接口返回时就真正完成。
+- 为什么系统里同时有 `content_publish_task` 和 `workflow_outbox_event` 两条异步链。
+- 出故障后是自动重试、人工重试，还是直接标记需要介入。
+
+### 1.2 第二轮：再看“状态是怎么落库和受控的”
+
+推荐顺序：
+
+1. `WorkflowStore`
+2. `MybatisWorkflowStore`
+3. `ContentDraftMybatisMapper.xml`
+4. `PublishTaskMybatisMapper.xml`
+5. `OutboxEventMybatisMapper.xml`
+6. `src/main/resources/sql/schema.sql`
+7. `src/main/resources/db/migration/mysql/V1__init_schema.sql`
+
+第二轮重点看：
+
+- `content_draft.lock_version` 怎么做乐观并发控制。
+- `draft_operation_lock` 怎么做跨请求、跨线程的操作级互斥。
+- `content_publish_command` 怎么做发布命令幂等。
+- `content_publish_task` 怎么做任务 claim、退避重试、最终 DEAD。
+- `workflow_outbox_event` 怎么做可靠投递和失败补偿。
+
+### 1.3 第三轮：补齐“工程化外壳”
+
+推荐顺序：
+
+1. `WorkflowSecurityConfig`
+2. `WorkflowJwtAuthenticationFilter`
+3. `WorkflowJwtTokenService`
+4. `WorkflowAuthorizationInterceptor`
+5. `WorkflowOperatorResolver`
+6. `WorkflowPermissionPolicy`
+7. `WorkflowTraceLoggingFilter`
+8. `WorkflowLogContext`
+9. `RedisCacheConfig`
+10. `WorkflowSchedulerModeConfiguration`
+11. `WorkflowXxlJobHandlers`
+
+这一轮主要回答：
+
+- 登录、JWT、请求上下文、接口权限是怎么挂起来的。
+- traceId/requestId 为什么能从 HTTP 一直传到 worker、MQ、scheduler。
+- 本地定时轮询和 XXL-Job 调度中心到底谁负责“触发”，谁负责“执行业务”。
+
+---
+
+## 2. 项目分层地图
 
 主代码都在：
 
@@ -18,851 +107,1607 @@
 src/main/java/com/contentworkflow
 ```
 
-目录结构可以先粗略记成下面这样：
+按职责理解，比按包名死记更重要。
+
+### 2.1 接口层 `workflow.interfaces`
+
+代表类：
+
+- `ContentWorkflowController`
+- `WorkflowAuthenticationController`
+- `WorkflowRecoveryController`
+
+这一层负责：
+
+- HTTP 路由和参数校验
+- 声明权限要求
+- 注入当前操作人
+- 调用应用服务
+- 返回统一 `ApiResponse`
+
+这一层不负责：
+
+- 状态机流转
+- 发布任务编排
+- 幂等命令判断
+- SQL 细节
+
+也就是说，Controller 是“薄入口”，不是业务核心。
+
+### 2.2 应用层 `workflow.application`
+
+代表类：
+
+- `ContentWorkflowApplicationService`
+- `PublishTaskWorker`
+- `PublishTaskProgressService`
+- `WorkflowRecoveryService`
+- `WorkflowReconciliationService`
+- `OutboxRelayWorker`
+
+这一层是项目真正的主战场。
+
+其中：
+
+- `ContentWorkflowApplicationService` 负责同步业务用例编排
+- `PublishTaskWorker` 负责把发布任务从“待执行”推进到“已派发”
+- `PublishTaskProgressService` 负责把“下游确认成功”推进成“任务成功/草稿最终发布成功”
+- `WorkflowRecoveryService` 负责人工恢复入口
+- `WorkflowReconciliationService` 负责扫描 DEAD 任务/事件并生成人工介入信号
+- `OutboxRelayWorker` 负责把 outbox 表里的事件真正发到 RabbitMQ
+
+### 2.3 领域层 `workflow.domain`
+
+代表对象：
+
+- `ContentDraft`
+- `ContentSnapshot`
+- `PublishTask`
+- `ReviewRecord`
+- `WorkflowStatus`
+- `PublishTaskStatus`
+- `PublishTaskType`
+- `DraftOperationType`
+
+领域层在这个项目里比较“轻”，它更像稳定的数据语义层，而不是重领域模型。
+
+你可以把它理解为：
+
+- 领域对象定义“系统里有哪些核心业务实体”
+- 枚举定义“系统允许哪些稳定状态和类型”
+- 真正的流程编排仍然主要写在应用服务里
+
+### 2.4 存储层
+
+存储层分两层看：
+
+1. 应用层眼里的抽象接口：`WorkflowStore`
+2. 真实实现：`MybatisWorkflowStore`
+
+`WorkflowStore` 暴露给应用层的能力包括：
+
+- 草稿查询与更新
+- 审核记录写入
+- 快照写入
+- 发布任务写入、更新、claim
+- 发布命令幂等查询/创建/更新
+- 审计日志写入与查询
+- 操作锁的获取、续租、释放
+
+`MybatisWorkflowStore` 再往下接：
+
+- `*Entity`
+- `*MybatisMapper`
+- `src/main/resources/mybatis/*.xml`
+
+这里是当前正式主线，不是 JPA。
+
+### 2.5 公共基础设施层 `common`
+
+按主题看最清楚：
+
+- 安全：`common.security`
+- Web 鉴权扩展：`common.web.auth`
+- 日志与 trace：`common.logging`
+- 缓存：`common.cache`
+- 消息与 outbox：`common.messaging`
+- 调度与 XXL-Job：`common.scheduler`
+
+这些类不直接实现业务规则，但决定了项目是否像一个“能上线的系统”，而不只是一个 demo。
+
+---
+
+## 3. 先记住这几个核心对象
+
+### 3.1 `ContentDraft`
+
+它是“当前工作副本”。
+
+关键字段：
+
+- `id`：草稿主键
+- `version`：乐观锁版本，对应表里的 `lock_version`
+- `bizNo`：业务编号
+- `draftVersion`：草稿内容版本，编辑会递增
+- `publishedVersion`：已发布版本号，发布/回滚后递增
+- `status`：工作流状态
+- `currentSnapshotId`：当前生效快照
+- `lastReviewComment`：最近一次驳回意见
+
+一句话理解：
+
+- `draftVersion` 看“编辑进度”
+- `publishedVersion` 看“对外生效进度”
+- 两者不是一个概念
+
+### 3.2 `ContentSnapshot`
+
+它是“某次发布时冻结下来的发布视图”。
+
+关键点：
+
+- 发布不是直接把 `ContentDraft` 当最终发布实体
+- 系统先固化一个 `ContentSnapshot`
+- 下游任务围绕 snapshot 工作
+- 回滚也不是“把草稿改回旧值”那么简单，而是基于历史 snapshot 再发一次新的发布流程
+
+### 3.3 `PublishTask`
+
+它代表“某个发布版本下的一项异步副作用”。
+
+当前任务类型：
+
+- `REFRESH_SEARCH_INDEX`
+- `SYNC_DOWNSTREAM_READ_MODEL`
+- `SEND_PUBLISH_NOTIFICATION`
+
+当前任务状态：
+
+- `PENDING`
+- `RUNNING`
+- `AWAITING_CONFIRMATION`
+- `SUCCESS`
+- `FAILED`
+- `DEAD`
+
+注意 `AWAITING_CONFIRMATION` 很关键，它说明：
+
+- worker 把任务派发出去了
+- 但系统还不认为这项任务最终成功
+- 必须等下游消费侧确认，才能进入 `SUCCESS`
+
+### 3.4 `PublishCommandEntry`
+
+它对应 `content_publish_command` 表，是发布命令幂等的锚点。
+
+用途：
+
+- 用 `draftId + commandType + idempotencyKey` 唯一约束防止重复创建发布
+- 记录本次命令目标版本、关联 snapshot、失败原因
+- 同一个 `Idempotency-Key` 只能重放相同 payload
+
+### 3.5 `PublishLogEntry`
+
+它对应 `content_publish_log` 表，是整个工作流最重要的排障入口之一。
+
+这里会记录：
+
+- 谁发起了什么动作
+- 前后状态是什么
+- 对应哪个发布版本、任务、outbox 事件
+- traceId / requestId 是什么
+- 成功、失败、重试、需要人工介入分别发生在什么时候
+
+### 3.6 `OutboxEventEntity`
+
+它对应 `workflow_outbox_event` 表。
+
+它不是“附属日志”，而是可靠消息投递链路的核心实体。
+
+一句话理解：
+
+- 业务代码不是直接 `rabbitTemplate.send(...)`
+- 业务代码先写 outbox 表
+- 再由 relay worker 异步送 MQ
+
+---
+
+## 4. 目录和主关系图
+
+可以先把系统看成五层：
 
 ```text
-com.contentworkflow
-├─ common
-│  ├─ api
-│  ├─ cache
-│  ├─ exception
-│  ├─ messaging
-│  │  └─ outbox
-│  ├─ scheduler
-│  └─ web
-│     └─ auth
-└─ workflow
-   ├─ interfaces
-   │  ├─ dto
-   │  └─ vo
-   ├─ application
-   │  ├─ store
-   │  └─ task
-   ├─ domain
-   │  ├─ entity
-   │  └─ enums
-   └─ infrastructure
-      ├─ cache
-      └─ persistence
-         ├─ entity
-         ├─ mapper
-         └─ repository
+HTTP / MQ / Scheduler
+    ->
+接口层（Controller / Listener / XXL Handler）
+    ->
+应用层（ApplicationService / Worker / RecoveryService）
+    ->
+存储抽象层（WorkflowStore / OutboxEventRepository）
+    ->
+MyBatis + DB / RabbitMQ / Cache / Security / Trace
 ```
 
-第一次看时，不要被目录多吓到。可以先这样理解：
-
-- `common`：所有业务都可能会用到的公共基础设施
-- `workflow.interfaces`：HTTP 入口
-- `workflow.application`：业务编排核心
-- `workflow.domain`：业务概念定义
-- `workflow.infrastructure`：数据库和缓存落地实现
-
-## 二、建议的阅读顺序
-
-如果你时间有限，就按下面这个顺序读：
-
-1. `workflow.interfaces.ContentWorkflowController`
-2. `workflow.application.InMemoryContentWorkflowService`
-3. `workflow.application.task.PublishTaskWorker`
-4. `workflow.application.task.PublishTaskProgressService`
-5. `common.messaging.WorkflowSideEffectConsumerService`
-6. `workflow.application.task.WorkflowRecoveryService`
-7. `workflow.application.store.WorkflowStore`
-8. `workflow.application.store.JpaWorkflowStore`
-9. `common.web.auth.WorkflowAuthorizationInterceptor`
-10. `workflow.application.task.OutboxRelayWorker`
-
-这个顺序背后的思路是：
-
-- 先看系统对外暴露什么能力
-- 再看同步主流程怎么编排
-- 再看异步链路怎么补全
-- 最后再看底层怎么落库和投递消息
-
-## 三、先建立一个“请求怎么走”的总图
-
-你可以先把项目想象成四条主线同时存在：
-
-1. HTTP 主链路
-2. 发布任务链路
-3. Outbox 消息链路
-4. 失败恢复链路
-
-对应的源码流向大概如下：
+更具体一点：
 
 ```text
-浏览器 / 前端 / 调用方
+HTTP Request
+  -> WorkflowTraceLoggingFilter
+  -> Spring Security Filter Chain
+  -> WorkflowJwtAuthenticationFilter
+  -> DispatcherServlet
+  -> WorkflowAuthorizationInterceptor
+  -> CurrentWorkflowOperatorArgumentResolver
   -> Controller
-  -> Application Service
+  -> ContentWorkflowApplicationService
   -> WorkflowStore
-  -> JPA Repository / DB
+  -> MybatisWorkflowStore
+  -> Mapper/XML
+  -> MySQL
 
-publish / rollback
-  -> 创建 PublishTask
+Publish Async
   -> PublishTaskWorker
   -> PublishTaskHandler
-  -> PublishTaskProgressService
-  -> WorkflowSideEffectConsumerService
-  -> 草稿最终转为 PUBLISHED
-
-业务事件
+  -> WorkflowEventPublisher
   -> OutboxWorkflowEventPublisher
   -> workflow_outbox_event
   -> OutboxRelayWorker
   -> RabbitMQ
-
-失败任务 / 失败事件
-  -> WorkflowRecoveryService
-  -> 重新排队
-  -> worker 继续执行
+  -> WorkflowSideEffectEventLoggingListener
+  -> WorkflowSideEffectConsumerService
+  -> PublishTaskProgressService
+  -> Draft PUBLISHED / PUBLISH_FAILED
 ```
 
-## 四、`workflow.interfaces`：接口层怎么看
+---
 
-这一层最重要的类是：
+## 5. HTTP 主链路：从认证到 Controller 到 ApplicationService 到 MyBatis
 
-- `ContentWorkflowController`
-- `WorkflowRecoveryController`
+这是新人最应该先看懂的一条链。
 
-先不要纠结每个注解，先看方法名。你会立刻发现项目提供的业务入口很完整：
+### 5.1 请求进入后，最先经过 `WorkflowTraceLoggingFilter`
 
-- 草稿创建、修改、查询、分页、统计
-- 提交审核、审核通过/驳回
-- 发布、回滚、下线
-- 查看快照、任务、命令、日志、时间线
-- 手工重试失败任务和 outbox 事件
+类：
 
-### 1. 接口层真正负责什么
+- `common.logging.WorkflowTraceLoggingFilter`
+- `common.logging.WorkflowLogContext`
 
-接口层的职责很克制，主要就是：
+它做的事：
 
-- 收请求
-- 校验参数
-- 限制权限
-- 注入当前操作人
-- 调应用服务
-- 返回统一响应
+- 从请求头读取 `X-Trace-Id` / `X-Request-Id`
+- 兼容 `X-B3-TraceId` / `traceparent`
+- 没有就自动生成
+- 把 traceId/requestId 放进 MDC
+- 回写到响应头
+- 输出请求摘要日志
 
-比如 `publish(...)` 方法里一个值得注意的细节是：
+所以 trace 不是在 Controller 才出现，而是 HTTP 一进来就落好了。
 
-- 请求体里可以传 `idempotencyKey`
-- 请求头里也可以传 `Idempotency-Key`
-- Controller 会先把它们归一化，再交给服务层
+### 5.2 然后进入 Spring Security 过滤器链
 
-这说明接口层允许做“轻量适配”和“参数收口”，但不会在这里做复杂流程编排。
+入口配置：
 
-### 2. DTO 和 VO 分别看什么
+- `WorkflowSecurityConfig`
 
-`workflow.interfaces.dto` 里的类是“请求对象”。
+当前规则：
 
-你可以把它理解成：调用方允许提交什么字段、字段格式有什么限制。
+- `/api/auth/login` 允许匿名访问
+- `/api/workflows/**` 必须先认证
+- session 是 `STATELESS`
+- 不走 formLogin，不走 server-side session
 
-比如：
+### 5.3 JWT 认证由 `WorkflowJwtAuthenticationFilter` 完成
 
-- `CreateDraftRequest`
-- `UpdateDraftRequest`
-- `PublishRequest`
-- `RollbackRequest`
-- `ManualRecoveryRequest`
+它的流程很直接：
 
-`workflow.interfaces.vo` 里的类是“响应对象”。
+1. 读取 `Authorization`
+2. 校验是否以 `Bearer ` 开头
+3. 调 `WorkflowJwtTokenService.authenticate(token)`
+4. 解析 operatorId/operatorName/roles
+5. 把认证结果放入 `SecurityContext`
 
-它们回答的是：应用层结果最终要以什么结构返回给前端或调用方。
+`WorkflowJwtTokenService` 负责：
 
-比如：
+- 校验 issuer、签名、过期时间
+- 从 claims 中取出 `operatorId`、`operatorName`、`roles`
+- 组装成 `WorkflowJwtPrincipal`
 
-- `ContentDraftResponse`
-- `PublishTaskResponse`
-- `PublishDiffResponse`
-- `PublishAuditTimelineResponse`
+### 5.4 认证之后，还有一层业务语义鉴权
 
-新人常见误区是把 DTO/VO 当成“纯传输壳子，不重要”。其实它们能反映系统对外暴露了什么能力，读一遍很有助于建立整体印象。
-
-## 五、`common.web.auth`：请求在进业务前先经过谁
-
-在 Controller 真正执行前，请求会先经过权限和审计上下文这一层。
-
-这里最值得看的类有：
+入口：
 
 - `WorkflowAuthorizationInterceptor`
-- `WorkflowPermissionPolicy`
-- `WorkflowOperatorResolver`
-- `CurrentWorkflowOperatorArgumentResolver`
 
-### 1. 这层在做什么
+这一步非常重要，因为它说明项目的权限控制分两层：
 
-它主要完成几件事：
+1. Spring Security 负责“你是不是登录用户”
+2. `common.web.auth` 负责“你是不是具备当前工作流角色/权限”
 
-- 从请求头里解析角色和操作人
-- 检查方法上的权限注解
-- 选择当前生效角色
-- 生成 `WorkflowAuditContext`
-- 把当前操作人对象注入到 Controller 参数
+`WorkflowAuthorizationInterceptor` 会：
 
-这层的价值是把权限和审计入口统一起来，避免每个接口方法都手写：
+- 读取 Controller 方法上的 `@RequireWorkflowPermission`
+- 读取 Controller 方法上的 `@RequireWorkflowRole`
+- 用 `WorkflowOperatorResolver` 从 `SecurityContext` 解出登录身份
+- 用 `WorkflowPermissionPolicy` 计算角色权限
+- 选出当前请求的有效角色
+- 构造 `WorkflowOperatorIdentity`
+- 构造 `WorkflowAuditContext(traceId, requestId)`
+- 存到 request attribute 和 `WorkflowAuditContextHolder`
 
-```java
-if (!hasPermission(...)) { ... }
+因此后面业务层写审计日志时，并不是自己凭空拼 trace/operator，而是这里先把上下文打好了。
+
+### 5.5 Controller 层只做“薄转发”
+
+例如 `ContentWorkflowController.publish(...)`：
+
+- 从 Header 读取 `Idempotency-Key`
+- 与请求体里的 `idempotencyKey` 做归一
+- 注入 `@CurrentWorkflowOperator WorkflowOperatorIdentity`
+- 直接调用 `contentWorkflowService.publish(...)`
+
+真正的发布编排不在 Controller，而在应用服务。
+
+### 5.6 应用层主入口是 `ContentWorkflowApplicationService`
+
+这里是同步业务编排总枢纽。
+
+HTTP 主链路最后会在这里做：
+
+- 读取草稿
+- 校验状态
+- 计算 diff
+- 创建 snapshot
+- 创建 publish command
+- 创建 publish tasks
+- 写 publish log
+- 切换草稿状态
+
+### 5.7 再往下统一落到 `WorkflowStore`
+
+设计目的很明确：
+
+- 应用层不直接依赖具体 ORM
+- 存储能力被抽象成 `WorkflowStore`
+- 当前正式实现是 `MybatisWorkflowStore`
+
+### 5.8 `MybatisWorkflowStore` 才是当前正式持久化主线
+
+这层做 3 类事：
+
+1. 把领域对象映射成 `*Entity`
+2. 调 MyBatis Mapper
+3. 在关键查询上接缓存注解
+
+几个非常重要的实现细节：
+
+- `findDraftById`、`listDrafts`、`countDraftsByStatus` 带缓存
+- `updateDraft` 走条件更新，不是无脑覆盖
+- `tryAcquireDraftOperationLock` 通过插入锁行/替换过期锁来抢占操作锁
+- `claimRunnablePublishTasks` 负责把任务从可运行状态改成 `RUNNING`
+
+### 5.9 最底层是 Mapper/XML 和数据库
+
+最值得看的 SQL：
+
+- `ContentDraftMybatisMapper.xml`
+  - `conditionalUpdate` 用 `id + lock_version + expectedStatuses + biz_no` 做条件更新
+- `PublishTaskMybatisMapper.xml`
+  - `selectRunnableForUpdate` 只 claim `PENDING/FAILED` 且到期且锁过期的任务
+- `OutboxEventMybatisMapper.xml`
+  - `selectClaimCandidates` 只 claim `NEW/FAILED` 且到期且锁过期的 outbox 事件
+
+这一层直接体现出系统的并发控制策略，不要跳过。
+
+---
+
+## 6. 登录、JWT、请求上下文、权限拦截主链路
+
+这部分是当前代码新增的重要主线，旧文档通常讲得不够完整。
+
+### 6.1 登录链路
+
+入口：
+
+- `POST /api/auth/login`
+- `WorkflowAuthenticationController`
+- `WorkflowLoginService`
+
+流程：
+
+```text
+POST /api/auth/login
+  -> WorkflowAuthenticationController.login
+  -> WorkflowLoginService.login
+  -> AuthenticationManager
+  -> WorkflowDemoAccountAuthenticationProvider
+  -> WorkflowJwtTokenService.createToken
+  -> 返回 accessToken / expiresAt / operator 信息
 ```
 
-### 2. 为什么它对理解业务很重要
+当前默认认证提供者是 `WorkflowDemoAccountAuthenticationProvider`。
 
-因为项目里的很多日志都会带上：
+它依赖：
 
-- `operatorId`
-- `operatorName`
-- `requestId`
-- `traceId`
+- `WorkflowDemoAccountService`
+- `workflow.security.login.demo-users`
 
-这些信息不是在应用服务里“凭空出现”的，而是从 Web 层入口一路传下去的。
+也就是说：
 
-## 六、`InMemoryContentWorkflowService`：主业务编排中枢
+- 主配置默认没有内置账号
+- `application-demo.yml` 才提供 demo 用户
+- 本地演示账号是 profile 驱动的，不是硬编码主线
 
-虽然类名里有 `InMemory`，但它现在不是一个“只跑内存 demo 的服务类”，而是整个项目最核心的业务编排实现。
+### 6.2 请求上下文如何传到业务层
 
-### 1. 先理解它负责什么
+在业务层最终会出现两个重要上下文：
 
-这个类基本负责了所有同步业务动作的编排：
+- `WorkflowOperatorIdentity`
+- `WorkflowAuditContext`
 
-- 创建草稿
-- 修改草稿
-- 提交审核
-- 审核通过 / 驳回
-- 预览发布 diff
-- 发起发布
-- 发起回滚
-- 下线
-- 查询草稿、快照、任务、命令、日志、时间线
+来源分别是：
 
-你可以把它理解成“工作流应用服务总入口”。
+- `WorkflowOperatorIdentity`：认证 + 角色权限解析后得到
+- `WorkflowAuditContext`：拦截器里根据 request/trace 生成
 
-### 2. 这个类里有哪几类方法
+Controller 方法里通过：
 
-读这个类时，可以把方法按四组分开看：
+- `@CurrentWorkflowOperator`
 
-#### 第一组：普通同步动作
+拿到业务操作人。
 
-比如：
+应用层写日志时通过：
 
-- `createDraft`
-- `updateDraft`
-- `submitReview`
-- `review`
-- `offline`
+- `WorkflowAuditContextHolder.get()`
 
-这些动作特点是：
+拿到 traceId / requestId。
 
-- 主要影响草稿本身状态
-- 不需要创建异步副作用任务
-- 事务边界比较直观
+### 6.3 权限模型不是“角色判断写死在 Controller if 里”
 
-#### 第二组：发布编排动作
+权限相关类：
 
-比如：
+- `WorkflowPermission`
+- `WorkflowPermissionPolicy`
+- `WorkflowOperatorResolver`
+- `WorkflowAuthorizationInterceptor`
 
-- `getPublishDiff`
-- `publish`
-- `rollback`
+角色：
 
-这组是最核心也最复杂的，因为它们会影响：
+- `EDITOR`
+- `REVIEWER`
+- `OPERATOR`
+- `ADMIN`
 
-- 草稿状态
-- 发布版本号
-- 快照
-- 发布任务
-- 发布命令
-- 审计日志
-- 草稿级操作锁
+权限是聚合出来的，不是散落在业务方法里手写判断。
 
-#### 第三组：查询聚合动作
+例如：
 
-比如：
+- `EDITOR` 能写草稿、提交审核、查看发布 diff
+- `REVIEWER` 能审核
+- `OPERATOR` 能执行 publish/rollback/offline，查看任务/命令/日志，做任务手工重试
+- `ADMIN` 拥有全部权限，还能人工处理 outbox
 
-- `pageDraftSummaries`
-- `getDraftWorkflowSummary`
-- `listSnapshots`
-- `listPublishTasks`
-- `listPublishLogs`
-- `getPublishAuditTimeline`
+因此如果你要改权限，不要先去 Controller 改，先看 `WorkflowPermissionPolicy`。
 
-这些方法的特点是“查出来的不只是单张表数据，而是面向页面和排障场景的聚合结果”。
+---
 
-#### 第四组：辅助私有方法
+## 7. 发布 diff、幂等命令、快照、发布任务、任务确认、最终收口
 
-比如：
+这是项目最核心的主业务流程。
 
-- `requireDraft`
-- `ensureState`
-- `persistDraft`
-- `acquireDraftOperationLock`
-- `releaseDraftOperationLockQuietly`
-- `loadPublishDiff`
+### 7.1 `getPublishDiff` 是发布前的“变更规划器”
 
-这些方法对新人很关键，因为它们能告诉你这个类内部真正依赖了哪些约束和不变量。
+入口：
 
-## 七、草稿、审核和编辑链路怎么读
-
-这部分建议把 `createDraft`、`updateDraft`、`submitReview`、`review` 放在一起看。
-
-### 1. `createDraft`
-
-核心作用很简单：
-
-- 创建一个 `ContentDraft`
-- 初始状态设为 `DRAFT`
-- 初始化 `draftVersion=1`
-- 初始化 `publishedVersion=0`
-- 落库
-- 写一条 `DRAFT_CREATED` 审计日志
-
-这一步定下的是“当前工作副本”的初始语义。
-
-### 2. `updateDraft`
-
-重点不是“改字段”，而是“重新回到草稿态”。
-
-方法里最值得注意的点：
-
-- 只有 `DRAFT`、`REJECTED`、`OFFLINE` 能编辑
-- 编辑后 `draftVersion + 1`
-- 状态重置为 `DRAFT`
-- 清空最近一次驳回意见
-
-这反映出一个业务语义：只要再次编辑，草稿就进入新的编辑版本，不继续沿用旧驳回语义。
-
-### 3. `submitReview`
-
-它做的事情很直接：
-
-- 校验当前状态
-- 草稿状态改为 `REVIEWING`
-- 写日志
-
-### 4. `review`
-
-这个方法要特别注意“两条线同时保存”：
-
-- 一条线是当前草稿状态怎么变
-- 另一条线是审核历史怎么记录
-
-所以它既会：
-
-- 插入 `ReviewRecord`
-
-也会：
-
-- 更新 `ContentDraft.status`
-
-这就是为什么系统既能告诉你“现在这篇稿子是什么状态”，也能告诉你“它经历过哪些审核决策”。
-
-## 八、发布前差异计算：为什么会有 `getPublishDiff`
-
-很多同学第一次看会觉得：
-
-“发布不就是发吗，为什么还要先做 diff？”
-
-当前项目里，diff 的作用不是为了页面好看，而是为了**决定这次到底需要创建哪些副作用任务**。
-
-重点方法是：
-
-- `getPublishDiff(...)`
+- `ContentWorkflowApplicationService.getPublishDiff`
 - `loadPublishDiff(...)`
 
-它会做这些事情：
+它做的事不是简单字段比较，而是：
 
-- 找出基线发布版本
-- 找到对应快照
-- 对标题、摘要、正文分别做字段差异比较
-- 判断正文变化是内容变动、结构变动还是纯格式变动
-- 汇总影响范围
-- 计算应该创建哪些任务类型
+- 选择基准发布版本
+- 加载基准 snapshot
+- 生成字段 diff
+- 分析正文是否只是格式变化、内容变化、结构变化
+- 归纳为 `PublishChangeScope`
+- 反推出本次计划生成哪些 `PublishTask`
 
-可以把这部分理解成“发布决策器”：
+当前规划规则大意：
 
-- 它不直接发布
-- 但它决定这次发布的副作用计划
+- 首次发布：三个任务都建
+- 只改 metadata：索引刷新 + 读模型同步 + 通知
+- 改正文内容或结构：索引刷新 + 读模型同步
+- 纯格式变化：通常只需要读模型同步
 
-## 九、`publish`：最核心的方法到底做了什么
+这一步很重要，因为 publish 不是无脑固定创建三类任务，而是按 diff 决定。
 
-建议你第一次读 `publish` 时不要从头到尾顺着看，而是先按三个主题拆开。
+### 7.2 `publish(...)` 的真实主流程
 
-### 1. 主题一：幂等保护
+源码主入口：
 
-这部分解决的是：
+- `ContentWorkflowApplicationService.publish(Long draftId, PublishRequest request, WorkflowOperatorIdentity operator)`
 
-“用户重复点击发布，会不会重复生成快照和任务？”
+建议按下面顺序理解：
 
-关键机制：
+```text
+1. 读取 draft
+2. 归一化 idempotencyKey
+3. 计算 publish diff
+4. 如存在同 key 命令，先走幂等判断
+5. 校验 draft 状态只能是 APPROVED / PUBLISH_FAILED
+6. 校验必须存在可发布变化
+7. 计算 targetPublishedVersion = currentPublishedVersion + 1
+8. 获取 draft_operation_lock
+9. 写入 content_publish_command(IN_PROGRESS)
+10. draft 状态切到 PUBLISHING
+11. 创建新 snapshot
+12. 按 diff 创建 publish tasks
+13. 更新 draft.publishedVersion / currentSnapshotId
+14. publish command 改成 ACCEPTED
+15. 写入 PUBLISH_REQUESTED 审计日志
+16. 返回当前 draft
+```
 
-- 读取并规范化 `idempotencyKey`
-- 查询 `content_publish_command`
-- 同 key 已存在时校验是否是同一个请求
-- 已存在且状态合适时直接复用，不重复建任务
+这里最容易误解的点有 4 个。
 
-这不是单纯为了“接口返回一样的结果”，而是为了避免重复副作用。
+#### 误区 1：`publish()` 返回就代表发布完成
 
-### 2. 主题二：草稿级操作锁
+不是。
 
-在真正开始发布前，会调用：
+`publish()` 返回时，系统只完成了“发布意图落库 + 异步任务建好 + 草稿进入 `PUBLISHING`”。
 
-- `acquireDraftOperationLock(...)`
+真正的完成条件是：
 
-这一步很重要。它保证同一篇草稿在某个关键时刻不会同时做互斥动作，比如：
+- 同一 `publishedVersion` 下的所有 `PublishTask`
+- 都被下游确认成 `SUCCESS`
+- `PublishTaskProgressService.tryFinalizeDraft(...)`
+- 把草稿从 `PUBLISHING` 切到 `PUBLISHED`
 
-- 一个线程正在发布
-- 另一个线程又想回滚
-- 或者恢复流程同时介入
+#### 误区 2：幂等只是防重复提交，不校验 payload
 
-锁对象是：
+也不是。
 
-- `DraftOperationLockEntry`
+`publish()` 会通过 `content_publish_command` 做幂等，同时还会调用：
 
-对应的操作类型是：
+- `ensureIdempotencyKeyNotReusedForDifferentPayload(...)`
 
-- `PUBLISH`
-- `ROLLBACK`
-- `OFFLINE`
+逻辑是：
 
-注意这里的锁是“带过期时间的租约锁”，不是永久锁。
+- 如果同一个 `Idempotency-Key` 之前已经对应过某个 snapshot
+- 当前 draft 内容和那个 snapshot 不一致
+- 就抛 `IDEMPOTENCY_KEY_REUSED`
 
-### 3. 主题三：主事务编排
+这能防止“拿旧 key 发新内容”。
 
-发布进入主事务后，核心动作依次是：
+#### 误区 3：snapshot 只是审计备份
 
-1. 把草稿推进到 `PUBLISHING`
-2. 创建新的 `ContentSnapshot`
-3. 根据 diff 计算任务类型
-4. 批量创建 `PublishTask`
-5. 更新草稿的 `publishedVersion` 和 `currentSnapshotId`
-6. 更新命令状态
-7. 写 `PUBLISH_REQUESTED` 日志
+不对。
 
-要注意一个核心事实：
+snapshot 是发布主流程的一部分：
 
-`publish(...)` 返回成功，并不等于“发布已经最终完成”。
+- 它承载“本次发布版本”的冻结内容
+- 异步任务围绕 snapshot 工作
+- 回滚也基于历史 snapshot 重新组织发布
 
-它只意味着：
+#### 误区 4：publish task 是固定模板
 
-- 发布主事务已成功落地
-- 后续副作用已经排队
+不是。
 
-草稿要真正进入 `PUBLISHED`，还要等后面的异步链路全部完成。
+任务集合来自 diff 规划，不同发布内容可能创建不同任务组合。
 
-## 十、`rollback`：为什么不是“把旧数据覆盖回来”
+### 7.3 `rollback(...)` 本质是“基于旧 snapshot 再发布一次”
 
-新人常见误解：
+入口：
 
-“回滚是不是把草稿改回旧内容就行？”
+- `ContentWorkflowApplicationService.rollback(...)`
 
-当前实现不是这样。
+流程不是“把库字段改回旧值”，而是：
 
-`rollback(...)` 的真实语义是：
+1. 校验当前状态必须是 `PUBLISHED` 或 `OFFLINE`
+2. 找到目标历史 snapshot
+3. 获取新的操作锁
+4. draft 状态切到 `PUBLISHING`
+5. 基于历史 snapshot 内容创建一个新的 rollback snapshot
+6. 为新的 `publishedVersion` 创建全部 publish tasks
+7. 更新 draft 当前内容为目标 snapshot 内容
+8. 写 `ROLLBACK_REQUESTED` 审计日志
+9. 后续仍然走发布任务异步链路收口
 
-- 找到历史快照
-- 基于历史快照内容生成一个新的发布版本
-- 新版本继续走发布任务链路
+所以：
 
-这意味着：
+- rollback 复用 publish 的任务执行框架
+- 它不是数据库层面的“回退”
+- 它是业务层面的“重新发布到历史版本内容”
 
-- 回滚本质上仍是一种发布
-- 只是发布内容来源于旧快照
+### 7.4 `offline(...)` 更轻，但仍受锁和状态约束
 
-这样设计的好处是：
+入口：
 
-- 历史版本不会被覆盖
-- 时间线是连续可追踪的
-- 下游系统收到的是一次完整的新版本发布
+- `ContentWorkflowApplicationService.offline(...)`
 
-源码里你会看到：
+它要求：
 
-- 新建 `rollbackSnapshot`
-- 标记 `rollback=true`
-- 为该版本重新创建任务
-- 草稿回到 `PUBLISHING`
+- 当前只能从 `PUBLISHED` 下线
+- 先获取 `draft_operation_lock`
+- 再把状态切到 `OFFLINE`
+- 写审计日志
 
-## 十一、`offline`：为什么简单，但仍然有锁
+它不像 publish/rollback 那样创建 snapshot 和任务，但仍然受统一并发控制模型保护。
 
-`offline(...)` 看起来最简单，只是把 `PUBLISHED` 改成 `OFFLINE`。
+---
 
-但当前代码仍然会先获取草稿级操作锁。
+## 8. 发布任务异步链：从任务创建到最终确认
 
-原因很现实：
+这是很多人第一次读源码时最容易断掉的一段。
 
-- 下线也是互斥操作
-- 它不能和发布、回滚并发进行
+### 8.1 任务是在哪里被创建的
 
-这说明锁的存在不是只服务于复杂流程，而是服务于“互斥业务动作的串行化”。
+在 `ContentWorkflowApplicationService.publish/rollback` 中。
 
-## 十二、`WorkflowStore`：应用层到底依赖了什么存储能力
+创建完成后落到：
 
-读到这里，建议去看 `workflow.application.store.WorkflowStore`。
+- `content_publish_task`
 
-这个接口很重要，因为它定义了“应用层认为存储层应该提供哪些能力”。
+初始状态：
 
-### 1. 不要把它只看成 CRUD 接口
+- `PENDING`
 
-它不仅有：
+### 8.2 谁来领取任务
 
-- `insertDraft`
-- `findDraftById`
-- `updateDraft`
+入口：
 
-还有很多带业务语义的方法：
+- `PublishTaskWorker.pollOnce()`
 
-- `pageDrafts`
-- `countDraftsByStatus`
-- `claimRunnablePublishTasks`
-- `tryCreatePublishCommand`
-- `findDraftOperationLock`
-- `tryAcquireDraftOperationLock`
-- `renewDraftOperationLock`
-- `releaseDraftOperationLock`
-- `listPublishLogsByTraceId`
+触发方式有两种：
 
-这说明存储层抽象不是机械 CRUD，而是“围绕业务动作暴露能力”。
+- 本地模式：`@Scheduled`
+- XXL-Job 模式：`WorkflowXxlJobHandlers.workflowPublishTaskPollJob`
 
-### 2. 为什么这对项目很重要
+真正干活的是 `PublishTaskWorker`，不是调度器本身。
 
-因为应用层依赖的不是某种具体数据库实现，而是这组业务能力。
+### 8.3 `PublishTaskWorker` 做了什么
 
-所以如果未来要替换底层实现，优先保证的是这些能力语义不变，而不是方法名不变。
+核心步骤：
 
-## 十三、`JpaWorkflowStore`：数据库细节都藏在哪里
+```text
+pollOnce
+  -> claimRunnablePublishTasks
+  -> 对每个 task 恢复 trace 上下文
+  -> 加载对应 draft 和 snapshot
+  -> 找到 PublishTaskHandler
+  -> 执行 handler
+  -> 成功后 markTaskDispatched
+  -> 失败后 FAILED 或 DEAD
+  -> DEAD 时尝试把 draft 推到 PUBLISH_FAILED 并做补偿
+```
 
-接着看 `JpaWorkflowStore`，你会发现很多“表面简单、实际上很关键”的实现细节都在这里。
+关键点：
 
-### 1. 条件更新而不是盲目覆盖
+- task claim 依赖 `PublishTaskMybatisMapper.xml` 里的 `select ... for update`
+- 只会领取 `PENDING/FAILED` 且可执行且锁超时的任务
+- worker 会把 task 状态推进到 `RUNNING`
+- handler 本身通常不直接调下游，而是发布事件
 
-比如更新草稿时，会结合：
+### 8.4 `DefaultPublishTaskHandlers` 只是“发事件的适配层”
 
-- 当前 `lock_version`
-- 允许的旧状态集合
+当前默认 handler 有三类：
 
-一起做条件更新。
+- 搜索索引刷新
+- 下游读模型同步
+- 发布通知
 
-这样做是为了避免：
+这几个 handler 的共同点：
 
-- 旧请求覆盖新状态
-- 并发请求把状态机冲乱
+- 自己不把业务副作用写死在 handler 里
+- 而是把 `PublishTaskContext` 组装成 `WorkflowEvent`
+- 再交给 `WorkflowEventPublisher`
 
-### 2. 锁获取和锁续租都在这里落地
+所以 handler 更像“任务 -> 事件”的转换器。
 
-草稿级操作锁并不是内存锁，而是数据库里的租约锁。
+### 8.5 为什么任务成功后先到 `AWAITING_CONFIRMATION`
 
-这里对应的方法有：
+入口：
 
-- `tryAcquireDraftOperationLock(...)`
-- `renewDraftOperationLock(...)`
-- `releaseDraftOperationLock(...)`
+- `PublishTaskProgressService.markTaskDispatched(...)`
 
-这说明锁不仅服务于单机，也服务于多实例场景。
+原因很重要：
 
-### 3. 任务领取是“查出来再处理”吗
+- worker 只能证明“消息已派发”
+- 不能证明“下游已经处理完成”
 
-不是简单的 `select * where status = PENDING`。
+所以任务状态设计成两段：
 
-任务领取还要考虑：
+1. worker 派发成功 -> `AWAITING_CONFIRMATION`
+2. consumer 确认成功 -> `SUCCESS`
 
-- 状态是否可领取
-- `nextRunAt` 是否到期
-- 锁是否超时
-- 领取后如何立刻标成运行中
+这是项目避免“消息刚发出去就误判业务成功”的关键设计。
 
-这部分逻辑封在 `claimRunnablePublishTasks(...)` 里。
+### 8.6 下游消费成功后，谁来确认任务
 
-## 十四、`PublishTaskWorker`：发布任务为什么不是建完就算成功
+链路：
 
-这部分是理解异步链路的关键。
+```text
+RabbitMQ Consumer
+  -> WorkflowSideEffectEventLoggingListener
+  -> WorkflowSideEffectConsumerService
+  -> 对应 Gateway
+  -> PublishTaskProgressService.confirmTaskSuccess(...)
+```
 
-### 1. `pollOnce`
+`WorkflowSideEffectConsumerService` 会：
 
-入口方法主要做三件事：
+- 调实际网关
+- 记录消费日志
+- 调 `confirmTaskSuccess(...)`
 
-1. 批量领取可执行任务
-2. 逐个执行任务
-3. 对等待确认的任务续租草稿操作锁
+### 8.7 谁负责最终把草稿收口为 `PUBLISHED`
 
-最后这一点是当前代码里很重要的新变化：任务分发后不一定立即结束，所以锁需要在“等待下游确认”的阶段持续续租。
+不是 worker。
 
-### 2. `executeOne`
+真正收口的是：
 
-读这个方法时可以关注几个检查点：
-
-- 任务必须是 `RUNNING`
-- 草稿必须还存在
-- 当前发布版本对应的快照必须存在
-- 必须能找到对应 `PublishTaskHandler`
-
-如果这些前置条件不成立，任务会直接变成不可恢复失败或进入失败处理分支。
-
-### 3. 为什么 handler 执行成功后不是直接 `SUCCESS`
-
-这是当前项目理解难度最高、也最有工程价值的一点。
-
-在新版本实现里：
-
-- handler 执行成功
-- 任务并不会马上标记 `SUCCESS`
-- 而是交给 `PublishTaskProgressService.markTaskDispatched(...)`
-- 任务状态变成 `AWAITING_CONFIRMATION`
-
-这说明系统承认一个现实：
-
-“我把请求发给下游了”不等于“下游已经真正完成了”。
-
-## 十五、`PublishTaskProgressService`：真正推进“发布完成”的类
-
-如果说 `PublishTaskWorker` 负责“把任务发出去”，那 `PublishTaskProgressService` 就负责“把任务做完这件事在系统里落稳”。
-
-这个类建议重点看三个方法。
-
-### 1. `markTaskDispatched`
-
-作用：
-
-- 任务从 `RUNNING` 进入 `AWAITING_CONFIRMATION`
-- 清理错误和锁字段
-- 续租草稿级操作锁
-- 写 `TASK_DISPATCHED` 审计日志
-
-你可以把它理解成：
-
-“系统已经把副作用请求发出去了，接下来等下游回执。”
-
-### 2. `confirmTaskSuccess`
-
-这个方法通常由消息消费侧成功回调触发。
-
-它会：
-
-- 校验任务身份是否匹配
-- 把任务改成 `SUCCESS`
-- 续租操作锁
-- 写确认成功日志
-- 尝试触发 `tryFinalizeDraft(...)`
-
-这一步是“外部成功结果回流到工作流状态机”的关键桥梁。
-
-### 3. `tryFinalizeDraft`
-
-这是发布真正收口的地方。
+- `PublishTaskProgressService.tryFinalizeDraft(...)`
 
 它会检查：
 
-- 草稿当前版本是不是这个版本
-- 草稿当前状态是不是 `PUBLISHING`
-- 当前版本是否存在 `DEAD` 任务
-- 当前版本的所有任务是否都已 `SUCCESS`
+- 当前 draft 是否仍是目标 `publishedVersion`
+- 当前 draft 是否仍在 `PUBLISHING`
+- 同版本下是否存在 `DEAD` 任务
+- 同版本下是否全部 `SUCCESS`
 
-只有全部满足，草稿才会从 `PUBLISHING` 进入 `PUBLISHED`。
+只有全部满足，才：
 
-所以要记住一句话：
+- 把 draft 改成 `PUBLISHED`
+- 释放 `draft_operation_lock`
+- 写 `PUBLISH_COMPLETED` 日志
+- 发布 `CONTENT_PUBLISHED` 业务事件
 
-**当前项目里，发布最终完成不是 `publish(...)` 决定的，而是 `PublishTaskProgressService.tryFinalizeDraft(...)` 决定的。**
+这一步才是“发布真的完成了”。
 
-## 十六、`WorkflowSideEffectConsumerService`：下游成功如何反馈回来
+---
 
-如果没有这层，任务就会一直卡在 `AWAITING_CONFIRMATION`。
+## 9. Outbox 事件投递与消费确认链路
 
-这个类的职责是：
+项目里有两条异步链，必须分清：
 
-- 接收搜索刷新成功消息
-- 接收读模型同步成功消息
-- 接收发布通知成功消息
-- 调用 `PublishTaskProgressService.confirmTaskSuccess(...)`
+1. `content_publish_task`：业务副作用任务链
+2. `workflow_outbox_event`：可靠消息投递链
 
-也就是说，它把“下游成功”翻译成“工作流任务成功”。
+第二条不是第一条的重复实现，而是给第一条和其他业务事件提供可靠投递底座。
 
-这是当前项目从“本地伪异步”走向“有明确确认语义的异步流程”的关键一环。
+### 9.1 为什么不是直接发 RabbitMQ
 
-## 十七、失败链路怎么处理
+因为系统要保证：
 
-读异步任务时，不要只看成功路径，失败路径更能体现工程质量。
+- 业务状态先安全落库
+- 事件投递失败可恢复
+- 事件发送有重试、死信、人工介入能力
 
-### 1. 任务自动失败重试
+所以统一采用 outbox 模式。
 
-在 `PublishTaskWorker.markFailedOrDead(...)` 里可以看到：
+### 9.2 事件发布入口：`WorkflowEventPublisher`
 
-- 失败后会累计 `retryTimes`
-- 根据指数退避设置 `nextRunAt`
-- 超过上限进入 `DEAD`
+这是一个抽象接口。
 
-这解决的是短期抖动问题。
+当前配置类：
 
-### 2. 不可恢复失败如何影响草稿
+- `WorkflowMessagingConfiguration`
 
-如果任务进入 `DEAD`，会继续调用：
+行为：
 
-- `markDraftFailedAndCompensate(...)`
+- `workflow.outbox.enabled=true` 时，注入 `OutboxWorkflowEventPublisher`
+- 否则注入 `NoopWorkflowEventPublisher`
 
-这一步会：
+也就是说，代码里依赖的是发布抽象，是否真正启用 outbox 由配置决定。
 
-- 把草稿从 `PUBLISHING` 改成 `PUBLISH_FAILED`
-- 写失败日志
-- 发布失败事件
-- 对已成功任务尝试做 best-effort 补偿
+### 9.3 `OutboxWorkflowEventPublisher` 做的不是发 MQ，而是写表
 
-这说明项目承认一种真实状态：
+它会：
 
-- 主事务已经成功
-- 但最终发布没有完成
+1. 接收 `WorkflowEvent`
+2. 通过 `WorkflowMessagingTraceContext.enrichOutboundHeaders(...)` 补齐 trace/request headers
+3. 解析 routing key
+4. 序列化 payload / headers
+5. 写 `workflow_outbox_event`
 
-所以需要一个明确的 `PUBLISH_FAILED` 状态。
+表字段会保存：
 
-## 十八、`WorkflowRecoveryService`：失败之后不是手改数据库
+- `eventId`
+- `eventType`
+- `aggregateType`
+- `aggregateId`
+- `aggregateVersion`
+- `exchangeName`
+- `routingKey`
+- `payloadJson`
+- `headersJson`
+- `traceId`
+- `requestId`
+- `status`
+- `attempt`
 
-这部分非常值得新人认真看，因为很多 demo 系统只做 happy path，这个项目把恢复也做成了正式流程。
+### 9.4 `MybatisOutboxEventRepository` 负责把 trace 字段与 headers 同步
 
-### 1. 它提供哪些能力
+这是一个容易忽略但很关键的点。
 
-主要包括：
+它做两件工程化工作：
 
-- 查询可恢复发布任务
-- 手动重试单个失败任务
-- 批量重试当前版本失败任务
-- 查询可恢复 outbox 事件
-- 手动重试 outbox 事件
+- hydrate：如果 traceId/requestId 字段为空，尝试从 headersJson 补回
+- synchronize：保存前把 traceId/requestId 同步进 headersJson
 
-### 2. 它有哪两个关键限制
+因此：
 
-#### 第一，只允许恢复当前 `publishedVersion`
+- outbox 表结构里有显式 trace/request 字段，便于 SQL 排障
+- 同时消息头里也保留完整上下文，便于 MQ 侧恢复 MDC
 
-这是为了避免误操作旧版本任务，把历史脏状态重新拉活。
+### 9.5 `OutboxRelayWorker` 才负责真正发 RabbitMQ
 
-#### 第二，恢复也要受草稿级操作锁控制
+它的流程：
 
-源码里可以看到它也会：
+```text
+pollOnce
+  -> claimBatch(NEW/FAILED)
+  -> status = SENDING
+  -> 恢复 trace 上下文
+  -> 转 AMQP Message
+  -> rabbitTemplate.send(exchange, routingKey, msg)
+  -> 成功则 SENT
+  -> 失败则 FAILED / DEAD
+```
 
-- 读取当前锁
-- 校验是否过期
-- 尝试获取或复用锁
+关键细节：
 
-这说明恢复不是“旁路操作”，而是正式参与工作流互斥控制的。
+- claim 也走 `select ... for update`
+- 只处理 `NEW/FAILED`
+- 发送前先把事件状态改成 `SENDING`
+- 只有持有租约的 worker 才能把事件最终改成 `SENT`
+- 失败会指数退避，超过最大重试数进 `DEAD`
 
-### 3. 恢复后草稿状态会怎么变
+### 9.6 RabbitMQ 侧的消费确认链
 
-如果草稿当前是 `PUBLISH_FAILED`，恢复任务时会尝试把它重新推进到 `PUBLISHING`。
+消费者入口：
 
-这一步非常重要，因为只有回到 `PUBLISHING`，后续任务成功后系统才可能再次收敛到 `PUBLISHED`。
+- `WorkflowSideEffectEventLoggingListener`
 
-## 十九、Outbox 链路源码怎么看
+它做的事：
 
-如果你已经理解发布任务链路，再看 Outbox 会轻松很多。
+- 从 AMQP headers 恢复 trace 上下文
+- 用 `WorkflowMessageDeduplicationGuard` 以 `messageId` 去重
+- 反序列化 payload
+- 调 `WorkflowSideEffectConsumerService`
 
-关键类是：
+消费确认的真正业务意义是：
 
-- `WorkflowEventPublisher`
-- `OutboxWorkflowEventPublisher`
-- `OutboxRelayWorker`
-- `OutboxEventEntity`
+- 不是“MQ 收到消息了”
+- 而是“下游副作用完成了，因此可以把对应 publish task 标为 SUCCESS”
 
-### 1. 业务代码怎么发事件
+### 9.7 RabbitMQ 拓扑在哪里定义
 
-业务层通常不直接调用 RabbitMQ。
+配置类：
 
-它只调用：
+- `WorkflowRabbitTopologyConfiguration`
 
-- `WorkflowEventPublisher.publish(...)`
+当前定义：
 
-如果启用了 Outbox，实际注入的是：
+- 一个 Topic Exchange
+- 三个 queue
+- 三个 routing key 绑定
 
-- `OutboxWorkflowEventPublisher`
+对应三类副作用任务：
 
-这个实现会先把事件写进 outbox 表。
+- 搜索索引刷新
+- 读模型同步
+- 发布通知
 
-### 2. `OutboxRelayWorker` 做什么
+---
+
+## 10. 恢复能力、操作锁、并发控制
+
+这一块是项目工程质量最强的部分之一。
+
+### 10.1 并发控制不是只靠一种机制
+
+当前至少有 4 层保护：
+
+1. 草稿乐观锁：`content_draft.lock_version`
+2. 草稿操作锁：`draft_operation_lock`
+3. 发布命令幂等：`content_publish_command`
+4. 任务/事件 claim 锁：`locked_by + locked_at + for update`
+
+这四层分别解决不同问题。
+
+### 10.2 乐观锁：防止同一草稿被并发改写
+
+入口：
+
+- `MybatisWorkflowStore.updateDraft(...)`
+- `ContentDraftMybatisMapper.xml` 的 `conditionalUpdate`
+
+条件更新约束：
+
+- `id`
+- `lock_version`
+- `biz_no`
+- `expectedStatuses`
+
+所以应用层不仅要求“版本没变”，还要求“状态仍是预期状态”。
+
+这保证了：
+
+- 不能在别的请求已经推进状态后继续写旧对象
+- 也不能越过状态机边界乱写
+
+### 10.3 操作锁：防止 publish/rollback/offline/恢复互相打架
+
+入口：
+
+- `ContentWorkflowApplicationService.acquireDraftOperationLock(...)`
+- `WorkflowRecoveryService.ensureDraftOperationLock(...)`
+
+表：
+
+- `draft_operation_lock`
+
+它保护的是“流程级互斥”，不是字段级并发。
+
+典型场景：
+
+- 一个 draft 正在 publish
+- 另一个请求又来 rollback
+- 或者人工恢复线程要重试任务
+
+这时系统不是靠“碰碰运气”，而是直接拒绝并给出当前锁信息。
+
+锁字段里还会记录：
+
+- `operationType`
+- `targetPublishedVersion`
+- `lockedBy`
+- `expiresAt`
+
+所以排障时能看出是谁占了锁、锁到什么时候。
+
+### 10.4 幂等命令：防重复创建发布流程
+
+入口：
+
+- `ContentWorkflowApplicationService.publish(...)`
+
+表：
+
+- `content_publish_command`
+
+它解决的不是“编辑冲突”，而是：
+
+- 同一个发布请求因为网络重试、网关重试、客户端重试被重复提交
+
+当前命令状态：
+
+- `IN_PROGRESS`
+- `ACCEPTED`
+- `FAILED`
+
+语义：
+
+- `IN_PROGRESS`：命令已被抢占，正在建立发布流程
+- `ACCEPTED`：命令已完成落库，异步任务待后续收口
+- `FAILED`：命令本身在建流程阶段失败
+
+### 10.5 任务 claim：防止多个 worker 同时执行一条任务
+
+入口：
+
+- `MybatisWorkflowStore.claimRunnablePublishTasks(...)`
+- `PublishTaskMybatisMapper.xml`
+
+筛选条件：
+
+- 状态是 `PENDING` 或 `FAILED`
+- `nextRunAt <= now`
+- `locked_at` 为空或已过期
+
+被 claim 后会：
+
+- 状态改成 `RUNNING`
+- 写入 `lockedBy`
+- 写入 `lockedAt`
+
+### 10.6 Outbox claim：防止多个 relay worker 重复发同一事件
+
+入口：
+
+- `OutboxRelayWorker.claimBatch(...)`
+- `OutboxEventMybatisMapper.xml`
+
+逻辑与任务 claim 类似，只是对象换成了 outbox event。
+
+### 10.7 恢复能力不是“故障后临时补丁”，而是正式设计的一部分
+
+恢复相关入口：
+
+- `WorkflowRecoveryController`
+- `WorkflowRecoveryService`
+- `WorkflowReconciliationService`
+
+支持的能力：
+
+- 查询某个 draft 下可恢复的 publish tasks
+- 手工重试单个任务
+- 手工重试当前版本全部失败/死亡任务
+- 查询可恢复的 outbox 事件
+- 手工重试 outbox 事件
+- 扫描 DEAD 任务/事件并生成人工介入信号
+
+### 10.8 手工恢复不是随便把状态改回去
+
+例如 `retryPublishTaskInternal(...)` 会做：
+
+1. 校验任务状态必须是 `FAILED/DEAD`
+2. 校验任务版本必须是当前 draft 的 `publishedVersion`
+3. 确保存在有效 `draft_operation_lock`
+4. 把 task 改回 `PENDING`
+5. 清空错误和锁
+6. 必要时把 draft 从 `PUBLISH_FAILED` 恢复到 `PUBLISHING`
+7. 写审计日志
+
+这意味着恢复接口仍然遵守状态机，而不是暴力改表。
+
+### 10.9 `WorkflowReconciliationService` 负责“发现需要人工介入”
+
+它不直接替你恢复，而是：
+
+- 扫描 `DEAD` publish task
+- 扫描 `DEAD` outbox event
+- 追加 intervention 日志
+- 用缓存标记避免重复刷相同告警
+
+这块通常用于运维巡检、定时扫描和后台看板。
+
+---
+
+## 11. Trace / requestId / MDC 传播链
+
+如果你想排查“为什么日志串不起来”，这部分必须看透。
+
+### 11.1 中心类是 `WorkflowLogContext`
 
 它负责：
 
-- 批量 claim 可发送事件
-- 标记为 `SENDING`
-- 真正调用 `rabbitTemplate.send(...)`
-- 成功则标记 `SENT`
-- 失败则进入 `FAILED` 或 `DEAD`
+- 解析 header
+- 生成 fallback id
+- 兼容 `traceparent` / `B3`
+- 写入 MDC
+- 从 map/header 中恢复上下文
+- 给异步任务包装上下文
 
-这条链路和发布任务链路很像，都是：
+这不是一个“辅助工具类”，而是本项目 trace 语义的中心。
 
-- 主流程只可靠落库
-- 后台 worker 负责异步推进
+### 11.2 HTTP 链路中的传播
 
-## 二十、看源码时要重点抓住的几个“不变量”
+```text
+HTTP Header
+  -> WorkflowTraceLoggingFilter
+  -> MDC(traceId, requestId)
+  -> WorkflowAuthorizationInterceptor
+  -> WorkflowAuditContextHolder
+  -> ApplicationService
+  -> PublishLog / PublishTask / OutboxEvent
+```
 
-如果你觉得类多、方法多，建议抓住下面这些不变量去读。
+### 11.3 publish 相关日志有一条固定的发布 trace
 
-### 1. 草稿状态和任务状态不是一回事
+`WorkflowAuditLogFactory.publishTraceId(draftId, publishedVersion)` 会生成：
 
-- 草稿状态看整体阶段
-- 任务状态看局部副作用进度
+```text
+publish:{draftId}:{publishedVersion}
+```
 
-### 2. 快照是不可变历史版本
+这意味着：
 
-- 草稿会继续编辑
-- 快照不会被回写覆盖
+- 同一次发布版本下的 publish log、task log、outbox log 可以按一个稳定 traceId 聚合
+- `getPublishAuditTimeline(...)` 就是基于这个 trace 组织时间线
 
-### 3. 发布接口只负责把事情“落稳”，不负责把事情“全部做完”
+### 11.4 任务和事件会把 trace/request 持久化
 
-这就是为什么会有 `PUBLISHING`。
+持久化位置：
 
-### 4. 真正的发布完成依赖任务全部成功并被确认
+- `content_publish_task.trace_id / request_id`
+- `workflow_outbox_event.trace_id / request_id`
+- `content_publish_log.trace_id / request_id`
 
-不是依赖接口返回。
+好处：
 
-### 5. 同一草稿的关键操作需要串行化
+- 即使异步线程、MQ 消费、甚至应用重启后继续执行
+- 仍能恢复原始链路信息
 
-这就是草稿级操作锁存在的原因。
+### 11.5 MQ 传播
 
-### 6. 失败恢复是正式流程，不是临时补丁
+链路：
 
-所以它有独立接口、独立日志和独立校验。
+```text
+Application/Worker
+  -> WorkflowMessagingTraceContext.enrichOutboundHeaders
+  -> Outbox headersJson
+  -> OutboxRelayWorker 转成 AMQP Header
+  -> WorkflowSideEffectEventLoggingListener.openInboundScope
+  -> 消费侧 MDC 恢复
+```
 
-## 二十一、如果你要改代码，通常该从哪一层下手
+### 11.6 Scheduler 传播
 
-最后给一个非常实用的定位建议。
+相关类：
 
-### 1. 要加新接口或改请求参数
+- `WorkflowSchedulerTraceContext`
+- `TracingThreadPoolTaskScheduler`
+- `TracingXxlJobHandler`
+- `TracingXxlJobSpringExecutor`
 
-优先看：
+作用：
 
-- `workflow.interfaces`
-- `dto`
-- `vo`
+- 给本地 `@Scheduled` 线程补 trace/request 上下文
+- 给 XXL-Job handler 包一层 trace
+- 在 scheduler 场景下往 MDC 里额外写入触发来源信息
 
-### 2. 要改状态流转或业务规则
+所以调度线程不是“裸线程”，日志里同样能看到链路标识。
 
-优先看：
+---
 
-- `InMemoryContentWorkflowService`
-- `PublishTaskProgressService`
-- `WorkflowRecoveryService`
+## 12. 调度链路：本地 `@Scheduled` 与 XXL-Job 模式切换
 
-### 3. 要加新的副作用任务类型
+当前项目把“执行逻辑”和“触发方式”分得很清楚。
 
-优先看：
+### 12.1 真正执行业务的是 worker，不是调度框架
 
-- `PublishTaskType`
-- `DefaultPublishTaskHandlers`
-- `PublishTaskEventFactory`
-- `WorkflowSideEffectConsumerService`
+真正业务 worker：
 
-### 4. 要改数据库持久化和并发控制
+- `PublishTaskWorker`
+- `OutboxRelayWorker`
+- `WorkflowReconciliationService`
 
-优先看：
+调度器只是决定“何时调用它们”。
+
+### 12.2 本地模式
+
+触发点：
+
+- `PublishTaskWorker.scheduledPollOnce()`
+- `OutboxRelayWorker.scheduledPollOnce()`
+
+条件：
+
+- `workflow.scheduler.local.enabled=true`
+
+适合：
+
+- 单机开发
+- 联调
+- 冒烟测试
+
+### 12.3 XXL-Job 模式
+
+入口：
+
+- `WorkflowXxlJobHandlers`
+
+当前 job：
+
+- `workflowPublishTaskPollJob`
+- `workflowOutboxRelayJob`
+- `workflowDeadPublishTaskScanJob`
+- `workflowDeadOutboxScanJob`
+
+条件：
+
+- `xxl.job.executor.enabled=true`
+
+并且 `application-xxl-job.yml` 会显式关闭：
+
+- `workflow.scheduler.local.enabled=false`
+
+这样可以避免本地轮询和 XXL-Job 双触发同一 worker。
+
+### 12.4 启动时会报告当前调度模式
+
+类：
+
+- `WorkflowSchedulerModeConfiguration`
+
+启动日志会明确告诉你当前是：
+
+- `LOCAL`
+- `XXL_JOB`
+- `HYBRID`
+- `NONE`
+
+这对排查“为什么 worker 没跑”非常有用。
+
+---
+
+## 13. 缓存主线：当前真实用法和应该怎样理解
+
+旧文档常常把缓存讲成“有 Redis 就行”，当前实现其实更细。
+
+### 13.1 缓存配置中心
+
+入口：
+
+- `RedisCacheConfig`
+
+行为：
+
+- 默认 `spring.cache.type=caffeine`
+- 只启本地缓存
+- 如果启用 redis profile 且存在 `RedisConnectionFactory`
+- 则组装 `TwoLevelCacheManager(local + redis)`
+
+### 13.2 两级缓存怎么工作的
+
+核心类：
+
+- `TwoLevelCacheManager`
+- `TwoLevelCache`
+
+读取顺序：
+
+```text
+先查 L1(local)
+  -> miss 再查 L2(redis)
+  -> L2 命中则回填 L1
+  -> 都 miss 再走 loader
+```
+
+写入顺序：
+
+- 先远端，再本地
+
+失效：
+
+- evict 两层一起失效
+
+### 13.3 当前主要缓存哪些读路径
+
+在 `MybatisWorkflowStore` 上最明显：
+
+- `findDraftById`
+- `listDrafts`
+- `countDraftsByStatus`
+
+也就是说缓存离“真实查询边界”很近，还是以 Store 为中心。
+
+### 13.4 还有两个工程性缓存
+
+缓存名见 `CacheNames`：
+
+- `CONSUMED_WORKFLOW_MESSAGE`
+  - 用于 MQ 消费去重
+- `DEAD_OUTBOX_SCAN_MARKER`
+  - 用于 DEAD outbox 扫描去重，避免重复打相同 intervention 信号
+
+### 13.5 `DraftCacheFacade` 的定位
+
+这个类存在，但当前并不是主业务流程的核心入口。
+
+它更像：
+
+- 面向未来扩展的缓存访问门面
+- 统一封装某些按草稿读取/失效的缓存操作
+
+读主流程时，不要把它当成理解业务的第一站。
+
+---
+
+## 14. 关键表：新人必须有表级心智模型
+
+最重要的 8 张表：
+
+### 14.1 `content_draft`
+
+存当前草稿主数据。
+
+你可以把它当成“工作流聚合根”。
+
+### 14.2 `draft_operation_lock`
+
+存当前草稿正在进行的重操作锁。
+
+它不是数据库事务锁，而是跨请求、跨线程、可观察、可过期的流程锁。
+
+### 14.3 `content_review_record`
+
+存审核历史。
+
+审核动作和草稿状态流转是同时推进的。
+
+### 14.4 `content_publish_snapshot`
+
+存每个已发起发布版本的冻结内容。
+
+回滚也会新增 snapshot。
+
+### 14.5 `content_publish_task`
+
+存发布副作用任务。
+
+这是发布链的异步执行中心。
+
+### 14.6 `content_publish_command`
+
+存幂等发布命令。
+
+这是接口级幂等和重复提交控制中心。
+
+### 14.7 `content_publish_log`
+
+存审计日志、任务日志、outbox 日志、人工介入日志。
+
+这是排障和时间线查询中心。
+
+### 14.8 `workflow_outbox_event`
+
+存可靠消息投递事件。
+
+这是系统事件可靠输出中心。
+
+---
+
+## 15. 如果我要改某类功能，先看哪里
+
+这一节是给新人最快定位用的。
+
+### 15.1 我要改接口字段、接口行为、参数校验
+
+先看：
+
+1. `workflow/interfaces/*Controller.java`
+2. `workflow/interfaces/dto/*`
+3. `workflow/interfaces/vo/*`
+4. `ContentWorkflowApplicationService`
+
+### 15.2 我要改草稿编辑、审核流转、状态机
+
+先看：
+
+1. `ContentWorkflowApplicationService`
+2. `WorkflowStatus`
+3. `WorkflowStore`
+4. `MybatisWorkflowStore`
+
+重点关注：
+
+- `ensureState(...)`
+- `persistDraft(...)`
+- `updateDraft(... expectedStatuses ...)`
+
+### 15.3 我要改发布前 diff 规则
+
+先看：
+
+1. `ContentWorkflowApplicationService.getPublishDiff`
+2. `loadPublishDiff(...)`
+3. `analyzeBody(...)`
+4. `buildChangeScopes(...)`
+5. `buildPlannedTasks(...)`
+
+### 15.4 我要改 publish / rollback 主流程
+
+先看：
+
+1. `ContentWorkflowApplicationService.publish`
+2. `ContentWorkflowApplicationService.rollback`
+3. `WorkflowAuditLogFactory`
+4. `PublishCommandEntry`
+5. `DraftOperationType`
+
+### 15.5 我要新增一种发布副作用任务
+
+先看：
+
+1. `PublishTaskType`
+2. `DefaultPublishTaskHandlers`
+3. `PublishTaskEventFactory`
+4. `WorkflowSideEffectEventLoggingListener`
+5. `WorkflowSideEffectConsumerService`
+6. 对应 gateway 接口
+
+通常要同时改 4 个面：
+
+- 新任务类型枚举
+- publish diff 规划规则
+- handler 发事件
+- consumer 收事件并确认任务
+
+### 15.6 我要改任务重试、失败策略、最终 DEAD 规则
+
+先看：
+
+1. `PublishTaskWorker.markFailedOrDead`
+2. `PublishTaskProgressService`
+3. `WorkflowRecoveryService`
+4. `WorkflowReconciliationService`
+
+### 15.7 我要改 Outbox/RabbitMQ
+
+先看：
+
+1. `WorkflowMessagingConfiguration`
+2. `OutboxWorkflowEventPublisher`
+3. `MybatisOutboxEventRepository`
+4. `OutboxRelayWorker`
+5. `WorkflowRabbitTopologyConfiguration`
+6. `WorkflowSideEffectEventLoggingListener`
+
+### 15.8 我要改人工恢复/运维排障接口
+
+先看：
+
+1. `WorkflowRecoveryController`
+2. `WorkflowRecoveryService`
+3. `WorkflowReconciliationService`
+4. `content_publish_log`
+
+### 15.9 我要改登录/JWT/权限
+
+先看：
+
+1. `WorkflowAuthenticationController`
+2. `WorkflowLoginService`
+3. `WorkflowDemoAccountAuthenticationProvider`
+4. `WorkflowJwtTokenService`
+5. `WorkflowSecurityConfig`
+6. `WorkflowAuthorizationInterceptor`
+7. `WorkflowPermissionPolicy`
+
+### 15.10 我要改 trace、日志串联、MDC
+
+先看：
+
+1. `WorkflowTraceLoggingFilter`
+2. `WorkflowLogContext`
+3. `WorkflowAuditLogFactory`
+4. `WorkflowMessagingTraceContext`
+5. `WorkflowSchedulerTraceContext`
+
+### 15.11 我要改缓存
+
+先看：
+
+1. `RedisCacheConfig`
+2. `TwoLevelCacheManager`
+3. `TwoLevelCache`
+4. `MybatisWorkflowStore`
+5. `CacheNames`
+
+### 15.12 我要改调度方式
+
+先看：
+
+1. `WorkflowSchedulerModeConfiguration`
+2. `WorkflowXxlJobHandlers`
+3. `PublishTaskWorker.scheduledPollOnce`
+4. `OutboxRelayWorker.scheduledPollOnce`
+5. `application-xxl-job.yml`
+
+---
+
+## 16. 新人最容易踩的几个误区
+
+### 16.1 不要再把 `InMemoryWorkflowStore` 当成主线
+
+它仍然存在，但不是当前正式落地路径。
+
+理解系统时应默认站在：
 
 - `WorkflowStore`
-- `JpaWorkflowStore`
-- `workflow.infrastructure.persistence.*`
+- `MybatisWorkflowStore`
+- MyBatis XML
+- MySQL
 
-### 5. 要改消息可靠投递
+这条线上。
 
-优先看：
+### 16.2 不要再按 JPA 风格去猜测持久化行为
 
-- `common.messaging.outbox.*`
-- `OutboxRelayWorker`
+当前关键写路径大量依赖：
 
-## 二十二、给实习生的一句总结
+- 条件更新
+- 手写 Mapper
+- XML SQL
+- 显式 claim
 
-第一次看这个项目时，可以只抓住一句话：
+很多语义不是“保存对象就自动生效”，而是“只有满足 expectedStatuses/expectedVersion 才能更新成功”。
 
-**这是一个把“内容发布”拆成同步主事务、异步副作用、消息可靠投递和失败恢复四条链路的工作流系统。**
+### 16.3 不要把 publish task 和 outbox event 混为一谈
 
-只要你先把这四条链路和各自负责人对应上，后面再看具体类和方法，就不会再觉得代码是散的。
+两者关系是：
+
+- publish task：业务副作用编排单元
+- outbox event：可靠消息投递单元
+
+publish task 经常会借助 outbox 发消息，但它们不是同一个抽象。
+
+### 16.4 不要把“消息发出”当成“业务完成”
+
+当前系统明确区分：
+
+- 派发成功
+- 下游确认成功
+- 全部任务成功
+- 草稿最终发布完成
+
+如果你读源码时没区分这四层，就会误判很多状态。
+
+### 16.5 不要忽略 `content_publish_log`
+
+线上排障时，它往往比单纯看 application log 更有用，因为：
+
+- 它带业务语义
+- 它能串 draft/task/outbox/version
+- 它能用固定 publish traceId 聚合整次发布
+
+---
+
+## 17. 建议的阅读姿势
+
+如果你准备真正改功能，建议按下面的方法读代码：
+
+### 17.1 先找入口，再找状态推进点
+
+例如你要理解发布：
+
+1. 从 `ContentWorkflowController.publish` 开始
+2. 进 `ContentWorkflowApplicationService.publish`
+3. 找状态变化：
+   - `APPROVED -> PUBLISHING`
+   - `PUBLISHING -> PUBLISHED`
+   - `PUBLISHING -> PUBLISH_FAILED`
+4. 再看哪些类触发这些变化
+
+### 17.2 再找数据落点
+
+看：
+
+- 哪张表新增记录
+- 哪张表更新状态
+- 哪个日志动作写入了 `content_publish_log`
+
+### 17.3 最后再补工程化链条
+
+即：
+
+- trace 怎么传
+- 权限怎么拦
+- 调度怎么触发
+- 缓存怎么影响读取
+
+这样读，心智模型最稳。
+
+---
+
+## 18. 读完这份导读后，你应该形成的结论
+
+如果这份文档起作用，你应该已经明确下面这些判断：
+
+- 业务主中枢是 `ContentWorkflowApplicationService`，不是旧的内存实现。
+- 正式持久化主线是 `WorkflowStore` -> `MybatisWorkflowStore` -> MyBatis XML -> MySQL。
+- `publish()` 返回时只是进入 `PUBLISHING`，最终完成要等任务确认链路收口。
+- 发布前有 diff 规划，不是每次都固定跑同一组任务。
+- 幂等不只防重复提交，还防相同 key 对应不同 payload。
+- snapshot 是发布主模型的一部分，不是单纯审计备份。
+- Outbox 是可靠消息底座，不是“顺手记一条日志”。
+- 系统同时使用乐观锁、操作锁、幂等命令、claim 锁做多层并发保护。
+- JWT 认证之后还有一层工作流语义权限拦截。
+- traceId/requestId 会从 HTTP 进入 MDC，再进入任务、日志、outbox、MQ、scheduler。
+- 调度器只是触发器，真正业务逻辑仍在 worker/service。
+- 恢复能力是正式设计的一部分，不是线上坏了才想到的人肉补救。
+
+---
+
+## 19. 延伸阅读建议
+
+如果你已经读完这份文档，下一步建议配合这些主题继续深挖：
+
+- 表结构与索引：`src/main/resources/sql/schema.sql`
+- 发布流程与日志：`ContentWorkflowApplicationService` + `WorkflowAuditLogFactory`
+- 任务执行：`PublishTaskWorker` + `PublishTaskProgressService`
+- 消息链路：`OutboxWorkflowEventPublisher` + `OutboxRelayWorker` + `WorkflowSideEffectEventLoggingListener`
+- 权限链路：`WorkflowSecurityConfig` + `WorkflowJwtAuthenticationFilter` + `WorkflowAuthorizationInterceptor`
+- 调度链路：`WorkflowSchedulerModeConfiguration` + `WorkflowXxlJobHandlers`
+
+这份文档的职责是帮你快速建立主干理解。真正开始改需求时，优先围绕“入口类 + 状态推进点 + 落库表 + 审计日志”四件事来读源码，效率最高。

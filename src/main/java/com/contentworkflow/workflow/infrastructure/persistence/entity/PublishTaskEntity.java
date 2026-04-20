@@ -1,5 +1,9 @@
 package com.contentworkflow.workflow.infrastructure.persistence.entity;
 
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
 import com.contentworkflow.workflow.domain.enums.PublishTaskStatus;
 import com.contentworkflow.workflow.domain.enums.PublishTaskType;
 import lombok.Getter;
@@ -11,12 +15,19 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 @NoArgsConstructor
+@TableName("content_publish_task")
 public class PublishTaskEntity {
 
+    @TableId(type = IdType.AUTO)
     private Long id;
     private Long draftId;
     private Integer publishedVersion;
+    @TableField("trace_id")
+    private String traceId;
+    @TableField("request_id")
+    private String requestId;
     private PublishTaskType taskType;
+    @TableField("task_status")
     private PublishTaskStatus status;
     private Integer retryTimes;
     private String errorMessage;

@@ -4,11 +4,11 @@ import com.contentworkflow.common.api.PageResponse;
 import com.contentworkflow.common.exception.BusinessException;
 import com.contentworkflow.common.web.GlobalExceptionHandler;
 import com.contentworkflow.common.web.auth.CurrentWorkflowOperatorArgumentResolver;
-import com.contentworkflow.common.web.auth.WorkflowAuthConstants;
 import com.contentworkflow.common.web.auth.WorkflowAuthorizationInterceptor;
 import com.contentworkflow.common.web.auth.WorkflowOperatorIdentity;
 import com.contentworkflow.common.web.auth.WorkflowPermissionPolicy;
 import com.contentworkflow.common.web.auth.WorkflowOperatorResolver;
+import com.contentworkflow.testing.WorkflowSecurityTestSupport;
 import com.contentworkflow.workflow.application.ContentWorkflowService;
 import com.contentworkflow.workflow.domain.enums.WorkflowRole;
 import com.contentworkflow.workflow.domain.enums.WorkflowStatus;
@@ -22,6 +22,7 @@ import com.contentworkflow.workflow.interfaces.vo.PublishLogResponse;
 import com.contentworkflow.workflow.domain.enums.WorkflowAuditResult;
 import com.contentworkflow.workflow.domain.enums.WorkflowAuditTargetType;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -40,6 +41,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static com.contentworkflow.testing.WorkflowSecurityTestSupport.authenticatedWorkflowOperator;
+import static com.contentworkflow.testing.WorkflowSecurityTestSupport.invalidWorkflowAuthentication;
 
 /**
  * 测试类，用于验证当前模块在特定场景下的行为、状态变化或边界条件。
@@ -128,7 +131,13 @@ class ContentWorkflowAuthorizationTest {
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .addInterceptors(new WorkflowAuthorizationInterceptor(resolver, permissionPolicy))
                 .setCustomArgumentResolvers(new CurrentWorkflowOperatorArgumentResolver(resolver))
+                .alwaysDo(result -> WorkflowSecurityTestSupport.clearSecurityContext())
                 .build();
+    }
+
+    @AfterEach
+    void tearDown() {
+        WorkflowSecurityTestSupport.clearSecurityContext();
     }
 
     /**
@@ -157,9 +166,7 @@ class ContentWorkflowAuthorizationTest {
     @Test
     void createDraft_shouldRejectWhenRoleNotAllowed() throws Exception {
         mockMvc.perform(post("/api/workflows/drafts")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLE_HEADER, "REVIEWER")
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.REVIEWER))
                         .contentType(APPLICATION_JSON)
                         .content("""
                                 {
@@ -179,9 +186,7 @@ class ContentWorkflowAuthorizationTest {
     @Test
     void createDraft_shouldAllowEditorRole() throws Exception {
         mockMvc.perform(post("/api/workflows/drafts")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLE_HEADER, "EDITOR")
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.EDITOR))
                         .contentType(APPLICATION_JSON)
                         .content("""
                                 {
@@ -207,16 +212,12 @@ class ContentWorkflowAuthorizationTest {
                 .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
 
         mockMvc.perform(get("/api/workflows/drafts")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLE_HEADER, "EDITOR"))
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.EDITOR)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
 
         mockMvc.perform(get("/api/workflows/drafts")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLE_HEADER, "ADMIN"))
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.ADMIN)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"));
     }
@@ -228,9 +229,7 @@ class ContentWorkflowAuthorizationTest {
     @Test
     void multiRolesHeader_shouldWork() throws Exception {
         mockMvc.perform(post("/api/workflows/drafts")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLES_HEADER, "reviewer, editor")
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.REVIEWER, WorkflowRole.EDITOR))
                         .contentType(APPLICATION_JSON)
                         .content("""
                                 {
@@ -250,9 +249,7 @@ class ContentWorkflowAuthorizationTest {
     @Test
     void invalidRoleToken_shouldReject() throws Exception {
         mockMvc.perform(post("/api/workflows/drafts")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLES_HEADER, "editor,not_a_role")
+                        .with(invalidWorkflowAuthentication())
                         .contentType(APPLICATION_JSON)
                         .content("""
                                 {
@@ -261,8 +258,8 @@ class ContentWorkflowAuthorizationTest {
                                   "body": "b"
                                 }
                                 """))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
     }
 
     /**
@@ -275,9 +272,7 @@ class ContentWorkflowAuthorizationTest {
                 .thenThrow(new BusinessException("CONCURRENT_MODIFICATION", "draft changed concurrently"));
 
         mockMvc.perform(put("/api/workflows/drafts/1")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLE_HEADER, "EDITOR")
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.EDITOR))
                         .contentType(APPLICATION_JSON)
                         .content("""
                                 {
@@ -298,9 +293,7 @@ class ContentWorkflowAuthorizationTest {
                 .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
 
         mockMvc.perform(get("/api/workflows/drafts/page")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLE_HEADER, "EDITOR"))
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.EDITOR)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"));
     }
@@ -318,17 +311,13 @@ class ContentWorkflowAuthorizationTest {
 
         mockMvc.perform(get("/api/workflows/drafts/1/logs/timeline")
                         .param("traceId", "publish:1:1")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLE_HEADER, "EDITOR"))
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.EDITOR)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
 
         mockMvc.perform(get("/api/workflows/drafts/1/logs/timeline")
                         .param("traceId", "publish:1:1")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLE_HEADER, "OPERATOR"))
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.OPERATOR)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"));
     }
@@ -345,17 +334,13 @@ class ContentWorkflowAuthorizationTest {
 
         mockMvc.perform(get("/api/workflows/drafts/1/logs/publish-timeline")
                         .param("publishedVersion", "1")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLE_HEADER, "EDITOR"))
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.EDITOR)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
 
         mockMvc.perform(get("/api/workflows/drafts/1/logs/publish-timeline")
                         .param("publishedVersion", "1")
-                        .header(WorkflowAuthConstants.OPERATOR_ID_HEADER, OP_ID)
-                        .header(WorkflowAuthConstants.OPERATOR_NAME_HEADER, OP_NAME)
-                        .header(WorkflowAuthConstants.ROLE_HEADER, "OPERATOR"))
+                        .with(authenticatedWorkflowOperator(OP_ID, OP_NAME, WorkflowRole.OPERATOR)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"));
     }
