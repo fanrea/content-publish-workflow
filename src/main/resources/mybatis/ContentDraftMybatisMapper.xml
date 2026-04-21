@@ -4,62 +4,45 @@
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.contentworkflow.workflow.infrastructure.persistence.mybatis.ContentDraftMybatisMapper">
 
-    <sql id="draftColumns">
-        id,
-        lock_version as version,
-        biz_no,
-        title,
-        summary,
-        body,
-        draft_version,
-        published_version,
-        workflow_status,
-        current_snapshot_id,
-        last_review_comment,
-        created_at,
-        updated_at
-    </sql>
-
-    <sql id="draftWhere">
-        <where>
-            <if test="request != null and request.status != null and request.status.size() > 0">
-                workflow_status in
-                <foreach collection="request.status" item="status" open="(" close=")" separator=",">
-                    #{status}
-                </foreach>
-            </if>
-            <if test="request != null and request.createdFrom != null">
-                and created_at <![CDATA[>=]]> #{request.createdFrom}
-            </if>
-            <if test="request != null and request.createdTo != null">
-                and created_at <![CDATA[<=]]> #{request.createdTo}
-            </if>
-            <if test="request != null and request.updatedFrom != null">
-                and updated_at <![CDATA[>=]]> #{request.updatedFrom}
-            </if>
-            <if test="request != null and request.updatedTo != null">
-                and updated_at <![CDATA[<=]]> #{request.updatedTo}
-            </if>
-            <if test="request != null and request.keyword != null and request.keyword != ''">
-                <bind name="keywordLike" value="'%' + request.keyword.toLowerCase() + '%'" />
-                and (
-                    lower(biz_no) like #{keywordLike}
-                    or lower(title) like #{keywordLike}
-                    or lower(summary) like #{keywordLike}
-                    <if test="request.searchInBody != null and request.searchInBody">
-                        or lower(body) like #{keywordLike}
-                    </if>
-                )
-            </if>
-        </where>
+    <sql id="draftListColumns">
+        t1.id,
+        t1.lock_version as version,
+        t1.biz_no,
+        t1.title,
+        t1.summary,
+        t1.draft_version,
+        t1.published_version,
+        t1.workflow_status,
+        t1.current_snapshot_id,
+        t1.last_review_comment,
+        t1.created_at,
+        t1.updated_at
     </sql>
 
     <select id="selectPage" resultType="com.contentworkflow.workflow.infrastructure.persistence.entity.ContentDraftEntity">
-        select <include refid="draftColumns" />
-        from content_draft
+        SELECT <include refid="draftListColumns" />
+        FROM content_draft t1
+        INNER JOIN (
+        -- 子查询仅使用覆盖索引查出对应页的主键 id
+        SELECT id
+        FROM content_draft
         <include refid="draftWhere" />
-        order by ${sortColumn} ${sortDirection}, id ${sortDirection}
-        limit #{limit} offset #{offset}
+
+        -- 安全的排序逻辑：使用 choose 标签做白名单过滤，彻底杜绝 SQL 注入
+        ORDER BY
+        <choose>
+            <when test="sortColumn == 'created_at'">created_at</when>
+            <when test="sortColumn == 'updated_at'">updated_at</when>
+            <when test="sortColumn == 'biz_no'">biz_no</when>
+            <otherwise>id</otherwise>
+        </choose>
+        <choose>
+            <when test="sortDirection != null and sortDirection.toUpperCase() == 'ASC'">ASC</when>
+            <otherwise>DESC</otherwise>
+        </choose>,
+        id DESC
+        LIMIT #{limit} OFFSET #{offset}
+        ) t2 ON t1.id = t2.id
     </select>
 
     <select id="countPage" resultType="long">

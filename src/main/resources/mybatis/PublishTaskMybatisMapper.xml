@@ -29,6 +29,6 @@
           and (locked_at is null or locked_at <![CDATA[<]]> #{lockExpiredBefore})
         order by updated_at asc, id asc
         limit #{limit}
-        for update
+        for update SKIP LOCKED
     </select>
 </mapper>
