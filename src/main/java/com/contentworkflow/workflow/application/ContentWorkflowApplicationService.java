@@ -1202,7 +1202,7 @@ private String buildPublishAuditRemark(String remark, PublishDiffContext diff) {
 
 private PublishDiffContext loadPublishDiff(ContentDraft draft, Integer requestedBasePublishedVersion) {
     int baseVersion = requestedBasePublishedVersion == null
-            ? resolveDefaultBasePublishedVersion(draft)
+            ? resolveDefaultBasePublishedVersion(draft)//上一次成功的发布版本
             : requestedBasePublishedVersion;
     if (baseVersion < 0) {
         throw new BusinessException("INVALID_ARGUMENT", "basePublishedVersion must be >= 0");
@@ -1269,10 +1269,21 @@ private PublishDiffContext loadPublishDiff(ContentDraft draft, Integer requested
 
 private int resolveDefaultBasePublishedVersion(ContentDraft draft) {
     int publishedVersion = safeInt(draft.getPublishedVersion());
+
     if (draft.getStatus() == WorkflowStatus.PUBLISH_FAILED && publishedVersion > 0) {
-        // Retry from PUBLISH_FAILED should compare with the last stable version, not the failed target version.
-        return publishedVersion - 1;
+        //
+        List<ContentSnapshot> historySnapshots = store.listSnapshots(draft.getId());
+
+        return historySnapshots.stream()
+                // 核心逻辑：过滤出来源于“旧草稿版本”的快照（即剔除当前连续失败产生的脏快照）
+                .filter(snapshot -> safeInt(snapshot.getSourceDraftVersion()) < safeInt(draft.getDraftVersion()))
+                // 提取它们的发布版本号
+                .map(ContentSnapshot::getPublishedVersion)
+                .max(Integer::compareTo)
+                // 如果找不到（说明这是这篇文章诞生以来的首次发布周期），基准版本就是 0
+                .orElse(0);
     }
+
     return publishedVersion;
 }
 
