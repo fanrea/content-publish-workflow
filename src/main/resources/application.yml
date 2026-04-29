@@ -28,7 +28,7 @@ logging:
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %5p [%thread] [%X{traceId:-},%X{requestId:-}] %logger{36} - %msg%n"
 
-# 仅加载文档协作相关 mapper，避免历史模块 XML 干扰启动。
+# Load only collab-document related mappers.
 mybatis-plus:
   mapper-locations:
     - classpath*:mybatis/CollaborativeDocumentMybatisMapper.xml
@@ -44,10 +44,23 @@ workflow:
     enabled: ${DOC_REDIS_CACHE_ENABLED:false}
     key-prefix: ${DOC_REDIS_CACHE_PREFIX:cpw:doc:cache:}
     ttl-seconds: ${DOC_REDIS_CACHE_TTL_SECONDS:1800}
+  realtime:
+    redis-index:
+      # Enable redis-based cross-gateway room/session index.
+      enabled: ${DOC_REALTIME_REDIS_INDEX_ENABLED:false}
+    # Logical gateway id used in room routing/session index.
+    gateway-id: ${DOC_REALTIME_GATEWAY_ID:gateway-local}
+    recent-updates:
+      # Enable recent updates hot-window cache for reconnect fast path.
+      enabled: ${DOC_REALTIME_RECENT_UPDATES_ENABLED:false}
+      size: ${DOC_REALTIME_RECENT_UPDATES_SIZE:200}
+      ttl: ${DOC_REALTIME_RECENT_UPDATES_TTL:120s}
   ingress:
     rocketmq:
+      # When true, EDIT_OP ingress goes through RocketMQ.
       enabled: ${DOC_INGRESS_ROCKETMQ_ENABLED:false}
-      name-server: ${INGRESS_ROCKETMQ_NAME_SERVER:}
+      # Local compose default namesrv. Override via env in other environments.
+      name-server: ${INGRESS_ROCKETMQ_NAME_SERVER:127.0.0.1:9876}
       producer-group: ${INGRESS_ROCKETMQ_PRODUCER_GROUP:cpw_doc_ingress_producer}
       consumer-group: ${INGRESS_ROCKETMQ_CONSUMER_GROUP:cpw_doc_ingress_consumer}
       topic: ${INGRESS_ROCKETMQ_TOPIC:cpw_doc_ingress}

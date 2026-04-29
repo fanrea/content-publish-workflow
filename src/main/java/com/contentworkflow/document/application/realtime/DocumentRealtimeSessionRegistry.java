@@ -24,6 +24,11 @@ public class DocumentRealtimeSessionRegistry {
     private final Map<Long, Map<String, WebSocketSession>> sessionsByDocument = new ConcurrentHashMap<>();
     private final Map<String, Set<Long>> documentsBySession = new ConcurrentHashMap<>();
     private final Map<String, WebSocketSession> sendSessionsById = new ConcurrentHashMap<>();
+    private final DocumentRealtimeRedisIndex redisIndex;
+
+    public DocumentRealtimeSessionRegistry(DocumentRealtimeRedisIndex redisIndex) {
+        this.redisIndex = redisIndex;
+    }
 
     /**
      * 把会话绑定到某个文档房间。
@@ -34,17 +39,28 @@ public class DocumentRealtimeSessionRegistry {
         }
         String sessionId = session.getId();
         WebSocketSession safeSession = resolveSendSession(session);
-        sessionsByDocument
-                .computeIfAbsent(documentId, key -> new ConcurrentHashMap<>())
-                .compute(sessionId, (key, existing) -> {
-                    if (existing != null && existing.isOpen()) {
-                        return existing;
-                    }
-                    return safeSession;
-                });
-        documentsBySession
-                .computeIfAbsent(sessionId, key -> ConcurrentHashMap.newKeySet())
-                .add(documentId);
+        Map<String, WebSocketSession> sessions = sessionsByDocument
+                .computeIfAbsent(documentId, key -> new ConcurrentHashMap<>());
+        boolean addedToDocument = sessions.putIfAbsent(sessionId, safeSession) == null;
+        if (!addedToDocument) {
+            sessions.compute(sessionId, (key, existing) -> {
+                if (existing != null && existing.isOpen()) {
+                    return existing;
+                }
+                return safeSession;
+            });
+        }
+
+        Set<Long> docsOfSession = documentsBySession
+                .computeIfAbsent(sessionId, key -> ConcurrentHashMap.newKeySet());
+        boolean addedToSession = docsOfSession.add(documentId);
+
+        if (addedToSession && docsOfSession.size() == 1) {
+            redisIndex.addGatewaySession(sessionId);
+        }
+        if (addedToDocument && sessions.size() == 1) {
+            redisIndex.addRoomGateway(documentId);
+        }
     }
 
     /**
@@ -55,19 +71,29 @@ public class DocumentRealtimeSessionRegistry {
             return;
         }
         Map<String, WebSocketSession> sessions = sessionsByDocument.get(documentId);
+        boolean documentEmptyAfterUnbind = false;
         if (sessions != null) {
             sessions.remove(sessionId);
             if (sessions.isEmpty()) {
                 sessionsByDocument.remove(documentId);
+                documentEmptyAfterUnbind = true;
             }
         }
         Set<Long> docs = documentsBySession.get(sessionId);
+        boolean sessionEmptyAfterUnbind = false;
         if (docs != null) {
             docs.remove(documentId);
             if (docs.isEmpty()) {
                 documentsBySession.remove(sessionId);
                 sendSessionsById.remove(sessionId);
+                sessionEmptyAfterUnbind = true;
             }
+        }
+        if (documentEmptyAfterUnbind) {
+            redisIndex.removeRoomGateway(documentId);
+        }
+        if (sessionEmptyAfterUnbind) {
+            redisIndex.removeGatewaySession(sessionId);
         }
     }
 
@@ -84,6 +110,7 @@ public class DocumentRealtimeSessionRegistry {
         if (docs == null || docs.isEmpty()) {
             return List.of();
         }
+        redisIndex.removeGatewaySession(sessionId);
         List<Long> affected = new ArrayList<>(docs.size());
         for (Long docId : docs) {
             Map<String, WebSocketSession> sessions = sessionsByDocument.get(docId);
@@ -91,6 +118,7 @@ public class DocumentRealtimeSessionRegistry {
                 sessions.remove(sessionId);
                 if (sessions.isEmpty()) {
                     sessionsByDocument.remove(docId);
+                    redisIndex.removeRoomGateway(docId);
                 }
             }
             affected.add(docId);

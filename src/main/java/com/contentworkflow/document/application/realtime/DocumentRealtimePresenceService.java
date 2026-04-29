@@ -17,6 +17,11 @@ public class DocumentRealtimePresenceService {
 
     private final Map<Long, Map<String, String>> participantsByDocument = new ConcurrentHashMap<>();
     private final Map<String, Set<Long>> documentsBySession = new ConcurrentHashMap<>();
+    private final DocumentRealtimeRedisIndex redisIndex;
+
+    public DocumentRealtimePresenceService(DocumentRealtimeRedisIndex redisIndex) {
+        this.redisIndex = redisIndex;
+    }
 
     /**
      * 加入协作会话。
@@ -30,12 +35,18 @@ public class DocumentRealtimePresenceService {
             return listParticipants(documentId);
         }
         String normalizedName = normalizeEditorName(editorName);
-        participantsByDocument
+        String previousName = participantsByDocument
                 .computeIfAbsent(documentId, key -> new ConcurrentHashMap<>())
                 .put(sessionId, normalizedName);
         documentsBySession
                 .computeIfAbsent(sessionId, key -> ConcurrentHashMap.newKeySet())
                 .add(documentId);
+        if (previousName == null) {
+            redisIndex.incrementOnlineUser(documentId, normalizedName);
+        } else if (!previousName.equals(normalizedName)) {
+            redisIndex.decrementOnlineUser(documentId, previousName);
+            redisIndex.incrementOnlineUser(documentId, normalizedName);
+        }
         return listParticipants(documentId);
     }
 
@@ -49,13 +60,16 @@ public class DocumentRealtimePresenceService {
         if (!isValid(documentId) || sessionId == null || sessionId.isBlank()) {
             return listParticipants(documentId);
         }
-        removeSessionFromDocument(documentId, sessionId);
+        String removedName = removeSessionFromDocument(documentId, sessionId);
         Set<Long> docs = documentsBySession.get(sessionId);
         if (docs != null) {
             docs.remove(documentId);
             if (docs.isEmpty()) {
                 documentsBySession.remove(sessionId);
             }
+        }
+        if (removedName != null) {
+            redisIndex.decrementOnlineUser(documentId, removedName);
         }
         return listParticipants(documentId);
     }
@@ -75,7 +89,10 @@ public class DocumentRealtimePresenceService {
         }
         List<Long> affected = new ArrayList<>(docs.size());
         for (Long docId : docs) {
-            removeSessionFromDocument(docId, sessionId);
+            String removedName = removeSessionFromDocument(docId, sessionId);
+            if (removedName != null) {
+                redisIndex.decrementOnlineUser(docId, removedName);
+            }
             affected.add(docId);
         }
         return affected;
@@ -105,15 +122,16 @@ public class DocumentRealtimePresenceService {
      * @param documentId 参数 documentId。
      * @param sessionId 参数 sessionId。
      */
-    private void removeSessionFromDocument(Long documentId, String sessionId) {
+    private String removeSessionFromDocument(Long documentId, String sessionId) {
         Map<String, String> participants = participantsByDocument.get(documentId);
         if (participants == null) {
-            return;
+            return null;
         }
-        participants.remove(sessionId);
+        String removedName = participants.remove(sessionId);
         if (participants.isEmpty()) {
             participantsByDocument.remove(documentId);
         }
+        return removedName;
     }
 
     /**

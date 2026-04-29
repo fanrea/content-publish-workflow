@@ -2,6 +2,7 @@ package com.contentworkflow.document.application.ingress;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
+import org.apache.rocketmq.client.producer.MessageQueueSelector;
 import org.apache.rocketmq.client.producer.SendResult;
 import org.apache.rocketmq.client.producer.SendStatus;
 import org.apache.rocketmq.common.message.Message;
@@ -19,6 +20,13 @@ public class RocketMqDocumentOperationIngressPublisher implements DocumentOperat
 
     private static final Logger log = LoggerFactory.getLogger(RocketMqDocumentOperationIngressPublisher.class);
     private static final String MESSAGE_TAG = "DOCUMENT_OPERATION_INGRESS";
+    private static final MessageQueueSelector DOC_ID_QUEUE_SELECTOR = (queues, msg, arg) -> {
+        if (queues == null || queues.isEmpty()) {
+            throw new IllegalStateException("rocketmq has no writable queue for ingress topic");
+        }
+        int queueIndex = resolveQueueIndex((Long) arg, queues.size());
+        return queues.get(queueIndex);
+    };
 
     private final ObjectMapper objectMapper;
     private final DefaultMQProducer producer;
@@ -35,13 +43,33 @@ public class RocketMqDocumentOperationIngressPublisher implements DocumentOperat
             @Value("${workflow.ingress.rocketmq.send-timeout-ms:1000}") int sendTimeoutMs,
             @Value("${workflow.ingress.rocketmq.max-retries:2}") int maxRetries,
             @Value("${workflow.ingress.rocketmq.retry-backoff-ms:50}") long retryBackoffMs) {
+        this(
+                objectMapper,
+                buildProducer(nameServer, producerGroup, sendTimeoutMs),
+                topic,
+                maxRetries,
+                retryBackoffMs
+        );
+    }
+
+    RocketMqDocumentOperationIngressPublisher(
+            ObjectMapper objectMapper,
+            DefaultMQProducer producer,
+            String topic,
+            int maxRetries,
+            long retryBackoffMs) {
         this.objectMapper = objectMapper;
+        this.producer = producer;
         this.topic = topic;
         this.maxRetryTimes = Math.max(0, maxRetries);
         this.retryBackoffMs = Math.max(0L, retryBackoffMs);
-        this.producer = new DefaultMQProducer(producerGroup);
-        this.producer.setNamesrvAddr(nameServer);
-        this.producer.setSendMsgTimeout(Math.max(500, sendTimeoutMs));
+    }
+
+    private static DefaultMQProducer buildProducer(String nameServer, String producerGroup, int sendTimeoutMs) {
+        DefaultMQProducer producer = new DefaultMQProducer(producerGroup);
+        producer.setNamesrvAddr(nameServer);
+        producer.setSendMsgTimeout(Math.max(500, sendTimeoutMs));
+        return producer;
     }
 
     @Override
@@ -71,7 +99,7 @@ public class RocketMqDocumentOperationIngressPublisher implements DocumentOperat
         Exception lastException = null;
         for (int attempt = 0; attempt <= maxRetryTimes; attempt++) {
             try {
-                SendResult result = producer.send(message);
+                SendResult result = producer.send(message, DOC_ID_QUEUE_SELECTOR, command.docId());
                 if (result != null && result.getSendStatus() == SendStatus.SEND_OK) {
                     return;
                 }
@@ -101,6 +129,14 @@ public class RocketMqDocumentOperationIngressPublisher implements DocumentOperat
             throw lastException;
         }
         throw new IllegalStateException("ingress publish failed: send status not ok");
+    }
+
+    static int resolveQueueIndex(Long docId, int queueCount) {
+        if (queueCount <= 0) {
+            throw new IllegalArgumentException("queueCount must be positive");
+        }
+        int hash = docId == null ? 0 : docId.hashCode();
+        return Math.floorMod(hash, queueCount);
     }
 
     private String buildMessageKey(DocumentOperationIngressCommand command) {

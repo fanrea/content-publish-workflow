@@ -7,6 +7,7 @@ import com.contentworkflow.document.application.ingress.DocumentOperationIngress
 import com.contentworkflow.document.application.ingress.DocumentOperationIngressPublisher;
 import com.contentworkflow.document.application.realtime.DocumentOperationService;
 import com.contentworkflow.document.application.realtime.DocumentRealtimePresenceService;
+import com.contentworkflow.document.application.realtime.DocumentRealtimeRecentUpdateCache;
 import com.contentworkflow.document.application.realtime.DocumentRealtimeSessionRegistry;
 import com.contentworkflow.document.domain.entity.CollaborativeDocument;
 import com.contentworkflow.document.domain.entity.DocumentOperation;
@@ -41,6 +42,7 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
     private final DocumentOperationService operationService;
     private final DocumentRealtimePresenceService presenceService;
     private final DocumentRealtimeSessionRegistry sessionRegistry;
+    private final DocumentRealtimeRecentUpdateCache recentUpdateCache;
 
     public DocumentRealtimeWebSocketHandler(ObjectMapper objectMapper,
                                             DocumentCollaborationService documentService,
@@ -48,7 +50,8 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
                                             DocumentOperationIngressPublisher ingressPublisher,
                                             DocumentOperationService operationService,
                                             DocumentRealtimePresenceService presenceService,
-                                            DocumentRealtimeSessionRegistry sessionRegistry) {
+                                            DocumentRealtimeSessionRegistry sessionRegistry,
+                                            DocumentRealtimeRecentUpdateCache recentUpdateCache) {
         this.objectMapper = objectMapper;
         this.documentService = documentService;
         this.permissionService = permissionService;
@@ -56,6 +59,7 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
         this.operationService = operationService;
         this.presenceService = presenceService;
         this.sessionRegistry = sessionRegistry;
+        this.recentUpdateCache = recentUpdateCache;
     }
 
     @Override
@@ -186,8 +190,9 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
 
         int fromRevision = normalizeSyncBaseRevision(inbound.getBaseRevision());
         int limit = inbound.getSyncLimit() == null ? DEFAULT_SYNC_LIMIT : inbound.getSyncLimit();
-
-        List<DocumentOperation> operations = operationService.listOperationsSince(docId, fromRevision, limit);
+        CollaborativeDocument latest = documentService.getDocument(docId);
+        int latestRevision = latest.getLatestRevision() == null ? 0 : latest.getLatestRevision();
+        List<DocumentOperation> operations = resolveSyncOperations(docId, fromRevision, limit, latestRevision);
         for (DocumentOperation operation : operations) {
             sendSafe(session, DocumentWsEvent.applied(
                     docId,
@@ -200,11 +205,10 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
             ));
         }
 
-        CollaborativeDocument latest = documentService.getDocument(docId);
         sendSafe(session, DocumentWsEvent.syncDone(
                 docId,
                 fromRevision,
-                latest.getLatestRevision(),
+                latestRevision,
                 operations.size()
         ));
     }
@@ -355,6 +359,20 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
         view.setLength(op.getLength());
         view.setText(op.getText());
         return view;
+    }
+
+    private List<DocumentOperation> resolveSyncOperations(Long docId,
+                                                          int fromRevision,
+                                                          int limit,
+                                                          int latestRevision) {
+        if (latestRevision <= fromRevision) {
+            return List.of();
+        }
+        DocumentRealtimeRecentUpdateCache.ReplayResult cached = recentUpdateCache.replaySince(docId, fromRevision, limit);
+        if (cached.completeFromBase()) {
+            return cached.operations();
+        }
+        return operationService.listOperationsSince(docId, fromRevision, limit);
     }
 
     private void broadcast(Long docId, DocumentWsEvent event, String excludeSessionId) {

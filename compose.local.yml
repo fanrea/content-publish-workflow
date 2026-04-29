@@ -59,6 +59,37 @@ services:
       retries: 12
       start_period: 20s
 
+  rocketmq-namesrv:
+    image: apache/rocketmq:4.9.6
+    container_name: cpw-rocketmq-namesrv
+    restart: unless-stopped
+    profiles:
+      - rocketmq
+    environment:
+      TZ: Asia/Shanghai
+    command: sh mqnamesrv
+    ports:
+      - "9876:9876"
+
+  rocketmq-broker:
+    image: apache/rocketmq:4.9.6
+    container_name: cpw-rocketmq-broker
+    restart: unless-stopped
+    profiles:
+      - rocketmq
+    depends_on:
+      - rocketmq-namesrv
+    environment:
+      TZ: Asia/Shanghai
+      NAMESRV_ADDR: rocketmq-namesrv:9876
+    command: sh mqbroker -n rocketmq-namesrv:9876 autoCreateTopicEnable=true brokerIP1=127.0.0.1
+    ports:
+      - "10909:10909"
+      - "10911:10911"
+      - "10912:10912"
+    volumes:
+      - cpw-rocketmq-store:/home/rocketmq/store
+
   xxl-job-admin:
     image: xuxueli/xxl-job-admin:3.2.0
     container_name: cpw-xxl-job-admin
@@ -83,3 +114,4 @@ volumes:
   cpw-mysql-data:
   cpw-redis-data:
   cpw-rabbitmq-data:
+  cpw-rocketmq-store:

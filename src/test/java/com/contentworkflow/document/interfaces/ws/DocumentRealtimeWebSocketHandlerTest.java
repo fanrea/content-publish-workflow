@@ -6,7 +6,11 @@ import com.contentworkflow.document.application.ingress.DocumentOperationIngress
 import com.contentworkflow.document.application.ingress.DocumentOperationIngressPublisher;
 import com.contentworkflow.document.application.realtime.DocumentOperationService;
 import com.contentworkflow.document.application.realtime.DocumentRealtimePresenceService;
+import com.contentworkflow.document.application.realtime.DocumentRealtimeRecentUpdateCache;
 import com.contentworkflow.document.application.realtime.DocumentRealtimeSessionRegistry;
+import com.contentworkflow.document.domain.entity.CollaborativeDocument;
+import com.contentworkflow.document.domain.entity.DocumentOperation;
+import com.contentworkflow.document.domain.enums.DocumentOpType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,8 +22,11 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -32,6 +39,7 @@ class DocumentRealtimeWebSocketHandlerTest {
     private final DocumentOperationService operationService = mock(DocumentOperationService.class);
     private final DocumentRealtimePresenceService presenceService = mock(DocumentRealtimePresenceService.class);
     private final DocumentRealtimeSessionRegistry sessionRegistry = mock(DocumentRealtimeSessionRegistry.class);
+    private final DocumentRealtimeRecentUpdateCache recentUpdateCache = mock(DocumentRealtimeRecentUpdateCache.class);
 
     private DocumentRealtimeWebSocketHandler handler;
     private WebSocketSession session;
@@ -45,7 +53,8 @@ class DocumentRealtimeWebSocketHandlerTest {
                 ingressPublisher,
                 operationService,
                 presenceService,
-                sessionRegistry
+                sessionRegistry,
+                recentUpdateCache
         );
 
         session = mock(WebSocketSession.class);
@@ -135,5 +144,104 @@ class DocumentRealtimeWebSocketHandlerTest {
         assertThat(command.sessionId()).isEqualTo("ws-1");
         assertThat(command.timestamp()).isNotNull();
         assertThat(command.timestamp()).isBeforeOrEqualTo(LocalDateTime.now());
+    }
+
+    @Test
+    void handleEdit_shouldReturnErrorWhenIngressPublishFails() throws Exception {
+        doThrow(new IllegalStateException("document operation ingress mq is not enabled"))
+                .when(ingressPublisher)
+                .publish(any(DocumentOperationIngressCommand.class));
+
+        String payload = """
+                {
+                  "type":"EDIT_OP",
+                  "docId":100,
+                  "baseRevision":3,
+                  "clientSeq":13,
+                  "editorId":"u-3",
+                  "editorName":"alice",
+                  "op":{
+                    "opType":"INSERT",
+                    "position":2,
+                    "text":"x"
+                  }
+                }
+                """;
+
+        handler.handleTextMessage(session, new TextMessage(payload));
+
+        ArgumentCaptor<TextMessage> outbound = ArgumentCaptor.forClass(TextMessage.class);
+        verify(session, times(1)).sendMessage(outbound.capture());
+        DocumentWsEvent error = objectMapper.readValue(outbound.getValue().getPayload(), DocumentWsEvent.class);
+        assertThat(error.type()).isEqualTo("ERROR");
+        assertThat(error.message()).isEqualTo("failed to publish edit operation ingress command");
+        assertThat(error.docId()).isEqualTo(100L);
+        assertThat(error.clientSeq()).isEqualTo(13L);
+    }
+
+    @Test
+    void handleSync_shouldUseRecentUpdateCacheWhenComplete() throws Exception {
+        when(documentService.getDocument(100L)).thenReturn(CollaborativeDocument.builder()
+                .id(100L)
+                .latestRevision(5)
+                .title("doc")
+                .content("abc")
+                .build());
+        DocumentOperation cachedOp = DocumentOperation.builder()
+                .id(1001L)
+                .documentId(100L)
+                .revisionNo(4)
+                .baseRevision(3)
+                .editorId("u-1")
+                .editorName("alice")
+                .opType(DocumentOpType.INSERT)
+                .opPosition(1)
+                .opLength(0)
+                .opText("x")
+                .createdAt(LocalDateTime.now())
+                .build();
+        when(recentUpdateCache.replaySince(100L, 3, 200)).thenReturn(
+                new DocumentRealtimeRecentUpdateCache.ReplayResult(List.of(cachedOp), true)
+        );
+
+        String payload = """
+                {
+                  "type":"SYNC_OPS",
+                  "docId":100,
+                  "baseRevision":3,
+                  "editorId":"u-1"
+                }
+                """;
+
+        handler.handleTextMessage(session, new TextMessage(payload));
+
+        verify(operationService, never()).listOperationsSince(100L, 3, 200);
+    }
+
+    @Test
+    void handleSync_shouldFallbackToDbWhenRecentUpdateCacheIsIncomplete() throws Exception {
+        when(documentService.getDocument(100L)).thenReturn(CollaborativeDocument.builder()
+                .id(100L)
+                .latestRevision(6)
+                .title("doc")
+                .content("abc")
+                .build());
+        when(recentUpdateCache.replaySince(100L, 3, 200)).thenReturn(
+                new DocumentRealtimeRecentUpdateCache.ReplayResult(List.of(), false)
+        );
+        when(operationService.listOperationsSince(100L, 3, 200)).thenReturn(List.of());
+
+        String payload = """
+                {
+                  "type":"SYNC_OPS",
+                  "docId":100,
+                  "baseRevision":3,
+                  "editorId":"u-1"
+                }
+                """;
+
+        handler.handleTextMessage(session, new TextMessage(payload));
+
+        verify(operationService, times(1)).listOperationsSince(100L, 3, 200);
     }
 }

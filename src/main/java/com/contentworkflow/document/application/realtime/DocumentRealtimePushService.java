@@ -25,11 +25,14 @@ public class DocumentRealtimePushService {
     private static final Logger log = LoggerFactory.getLogger(DocumentRealtimePushService.class);
 
     private final DocumentRealtimeSessionRegistry sessionRegistry;
+    private final DocumentRealtimeRecentUpdateCache recentUpdateCache;
     private final ObjectMapper objectMapper;
 
     public DocumentRealtimePushService(DocumentRealtimeSessionRegistry sessionRegistry,
+                                       DocumentRealtimeRecentUpdateCache recentUpdateCache,
                                        ObjectMapper objectMapper) {
         this.sessionRegistry = sessionRegistry;
+        this.recentUpdateCache = recentUpdateCache;
         this.objectMapper = objectMapper;
     }
 
@@ -86,6 +89,14 @@ public class DocumentRealtimePushService {
     public void broadcastOperationApplied(DocumentOperation operation) {
         if (operation == null || operation.getDocumentId() == null) {
             return;
+        }
+        try {
+            recentUpdateCache.append(operation);
+        } catch (Exception ex) {
+            log.warn("recent update cache append failed unexpectedly, docId={}, revision={}",
+                    operation.getDocumentId(),
+                    operation.getRevisionNo(),
+                    ex);
         }
         broadcast(operation.getDocumentId(), DocumentWsEvent.applied(
                 operation.getDocumentId(),

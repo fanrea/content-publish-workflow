@@ -3,9 +3,9 @@ package com.contentworkflow.document.application.engine;
 import com.contentworkflow.document.application.ingress.DocumentOperationIngressCommand;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.rocketmq.client.consumer.DefaultMQPushConsumer;
-import org.apache.rocketmq.client.consumer.listener.ConsumeConcurrentlyContext;
-import org.apache.rocketmq.client.consumer.listener.ConsumeConcurrentlyStatus;
-import org.apache.rocketmq.client.consumer.listener.MessageListenerConcurrently;
+import org.apache.rocketmq.client.consumer.listener.ConsumeOrderlyContext;
+import org.apache.rocketmq.client.consumer.listener.ConsumeOrderlyStatus;
+import org.apache.rocketmq.client.consumer.listener.MessageListenerOrderly;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,12 +38,25 @@ public class RocketMqDocumentOperationIngressConsumer implements InitializingBea
             @Value("${workflow.ingress.rocketmq.name-server:}") String nameServer,
             @Value("${workflow.ingress.rocketmq.consumer-group:cpw_doc_ingress_consumer}") String consumerGroup,
             @Value("${workflow.ingress.rocketmq.topic:cpw_doc_ingress}") String topic) {
+        this(objectMapper, ingressHandler, topic, buildConsumer(nameServer, consumerGroup));
+    }
+
+    RocketMqDocumentOperationIngressConsumer(
+            ObjectMapper objectMapper,
+            DocumentOperationIngressHandler ingressHandler,
+            String topic,
+            DefaultMQPushConsumer consumer) {
         this.objectMapper = objectMapper;
         this.ingressHandler = ingressHandler;
         this.topic = topic;
-        this.consumer = new DefaultMQPushConsumer(consumerGroup);
-        this.consumer.setNamesrvAddr(nameServer);
-        this.consumer.setConsumeFromWhere(org.apache.rocketmq.common.consumer.ConsumeFromWhere.CONSUME_FROM_FIRST_OFFSET);
+        this.consumer = consumer;
+    }
+
+    private static DefaultMQPushConsumer buildConsumer(String nameServer, String consumerGroup) {
+        DefaultMQPushConsumer consumer = new DefaultMQPushConsumer(consumerGroup);
+        consumer.setNamesrvAddr(nameServer);
+        consumer.setConsumeFromWhere(org.apache.rocketmq.common.consumer.ConsumeFromWhere.CONSUME_FROM_FIRST_OFFSET);
+        return consumer;
     }
 
     @Override
@@ -52,7 +65,7 @@ public class RocketMqDocumentOperationIngressConsumer implements InitializingBea
             throw new IllegalStateException("workflow.ingress.rocketmq.name-server must be configured when ingress rocketmq is enabled");
         }
         consumer.subscribe(topic, "*");
-        consumer.registerMessageListener((MessageListenerConcurrently) this::consumeMessages);
+        consumer.registerMessageListener((MessageListenerOrderly) this::consumeMessages);
         consumer.start();
         started = true;
         log.info("rocketmq ingress consumer started, topic={}", topic);
@@ -70,7 +83,7 @@ public class RocketMqDocumentOperationIngressConsumer implements InitializingBea
         }
     }
 
-    private ConsumeConcurrentlyStatus consumeMessages(List<MessageExt> messages, ConsumeConcurrentlyContext context) {
+    private ConsumeOrderlyStatus consumeMessages(List<MessageExt> messages, ConsumeOrderlyContext context) {
         for (MessageExt message : messages) {
             try {
                 DocumentOperationIngressCommand command =
@@ -78,10 +91,9 @@ public class RocketMqDocumentOperationIngressConsumer implements InitializingBea
                 ingressHandler.handle(command);
             } catch (Exception ex) {
                 log.error("failed to consume ingress message, msgId={}, topic={}", message.getMsgId(), message.getTopic(), ex);
-                return ConsumeConcurrentlyStatus.RECONSUME_LATER;
+                return ConsumeOrderlyStatus.SUSPEND_CURRENT_QUEUE_A_MOMENT;
             }
         }
-        return ConsumeConcurrentlyStatus.CONSUME_SUCCESS;
+        return ConsumeOrderlyStatus.SUCCESS;
     }
 }
-

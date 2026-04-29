@@ -72,22 +72,99 @@ WebSocket（端点：`/ws/docs`）：
 
 ## 快速启动
 
-1. 启动依赖（MySQL、Redis）：
+1. 启动基础依赖（MySQL、Redis）：
 
 ```bash
-docker compose -f compose.local.yml up -d
+docker compose -f compose.local.yml up -d mysql redis
 ```
 
-2. 启动服务：
+2. 如需验证 `EDIT_OP -> RocketMQ ingress`，再启动 RocketMQ（namesrv + broker）：
+
+```bash
+docker compose -f compose.local.yml --profile rocketmq up -d rocketmq-namesrv rocketmq-broker
+```
+
+3. 启动服务：
 
 ```bash
 mvn spring-boot:run
 ```
 
-3. 最小联调入口：
+4. 最小联调入口：
 
 - HTTP：`http://localhost:8080/api/docs`
 - WebSocket：`ws://localhost:8080/ws/docs`
+
+### 启用 ingress RocketMQ（可选）
+
+默认 `workflow.ingress.rocketmq.enabled=false`。本地开启时至少设置：
+
+```powershell
+$env:DOC_INGRESS_ROCKETMQ_ENABLED="true"
+$env:INGRESS_ROCKETMQ_NAME_SERVER="127.0.0.1:9876"
+mvn spring-boot:run
+```
+
+可用这个命令快速确认开关是否生效：
+
+```powershell
+Get-ChildItem Env:DOC_INGRESS_ROCKETMQ_ENABLED,Env:INGRESS_ROCKETMQ_NAME_SERVER
+```
+
+补充说明见：[docs/INGRESS_ROCKETMQ_LOCAL.md](docs/INGRESS_ROCKETMQ_LOCAL.md)
+
+## 第2阶段本地验证（JOIN / EDIT_OP / SYNC_OPS）
+
+第2阶段联调建议先显式打开 realtime 配置（当前版本主要用于路由/热态能力预埋）：
+
+```powershell
+$env:DOC_REALTIME_REDIS_INDEX_ENABLED="true"
+$env:DOC_REALTIME_GATEWAY_ID="gateway-local-1"
+$env:DOC_REALTIME_RECENT_UPDATES_ENABLED="true"
+$env:DOC_REALTIME_RECENT_UPDATES_SIZE="200"
+$env:DOC_REALTIME_RECENT_UPDATES_TTL="120s"
+```
+
+然后按下面顺序验证闭环：
+
+1. 通过 HTTP 创建文档，记录 `docId` 与 `latestRevision`：
+
+```bash
+curl -X POST "http://localhost:8080/api/docs" \
+  -H "Content-Type: application/json" \
+  -H "X-Editor-Id: u1" \
+  -H "X-Editor-Name: alice" \
+  -d "{\"docNo\":\"demo-1\",\"title\":\"demo\",\"content\":\"hello\"}"
+```
+
+2. WebSocket 发送 `JOIN`，预期先收到 `SNAPSHOT`，随后收到 `PRESENCE`：
+
+```json
+{"type":"JOIN","docId":<docId>,"editorId":"u1","editorName":"alice"}
+```
+
+3. 发送 `EDIT_OP`，预期立即收到 `ACK(message=accepted_by_ingress)`，随后房间收到 `OP_APPLIED`：
+
+```json
+{
+  "type":"EDIT_OP",
+  "docId":<docId>,
+  "baseRevision":<latestRevision>,
+  "clientSeq":1,
+  "clientSessionId":"ws-client-1",
+  "editorId":"u1",
+  "editorName":"alice",
+  "op":{"opType":"INSERT","position":5,"length":0,"text":" world"}
+}
+```
+
+4. 发送 `SYNC_OPS`（模拟断线重连追赶），预期收到若干 `OP_APPLIED`，最后收到 `SYNC_DONE`：
+
+```json
+{"type":"SYNC_OPS","docId":<docId>,"baseRevision":<staleRevision>,"syncLimit":200,"editorId":"u1","editorName":"alice"}
+```
+
+完整操作脚本与检查点见：[docs/STAGE2_REALTIME_LOCAL.md](docs/STAGE2_REALTIME_LOCAL.md)
 
 ## 项目结构（核心）
 
