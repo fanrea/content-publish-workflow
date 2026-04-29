@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.contentworkflow.document.infrastructure.persistence.mybatis.DocumentOperationMybatisMapper">
+
+    <select id="selectByRevision" resultType="com.contentworkflow.document.infrastructure.persistence.entity.DocumentOperationEntity">
+        select
+            id,
+            document_id,
+            revision_no,
+            base_revision,
+            session_id,
+            client_seq,
+            op_type,
+            op_position,
+            op_length,
+            op_text,
+            editor_id,
+            editor_name,
+            created_at
+        from collaborative_document_operation
+        where document_id = #{documentId}
+          and revision_no = #{revisionNo}
+        limit 1
+    </select>
+
+    <select id="selectByRevisionRange" resultType="com.contentworkflow.document.infrastructure.persistence.entity.DocumentOperationEntity">
+        select
+            id,
+            document_id,
+            revision_no,
+            base_revision,
+            session_id,
+            client_seq,
+            op_type,
+            op_position,
+            op_length,
+            op_text,
+            editor_id,
+            editor_name,
+            created_at
+        from collaborative_document_operation
+        where document_id = #{documentId}
+          and revision_no &gt; #{fromRevisionExclusive}
+        order by revision_no asc
+        limit #{limit}
+    </select>
+</mapper>

@@ -1,0 +1,20 @@
+package com.contentworkflow.document.application.ingress;
+
+import com.contentworkflow.document.interfaces.ws.DocumentWsOperation;
+
+import java.time.LocalDateTime;
+
+/**
+ * 文档编辑入口命令：由网关接收后投递到异步处理链路。
+ */
+public record DocumentOperationIngressCommand(
+        Long docId,
+        Integer baseRevision,
+        String sessionId,
+        Long clientSeq,
+        String editorId,
+        String editorName,
+        DocumentWsOperation op,
+        LocalDateTime timestamp
+) {
+}

@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.contentworkflow.document.infrastructure.persistence.mybatis.CollaborativeDocumentMybatisMapper">
+
+    <select id="selectLatest" resultType="com.contentworkflow.document.infrastructure.persistence.entity.CollaborativeDocumentEntity">
+        select
+            id,
+            lock_version as version,
+            doc_no,
+            title,
+            content,
+            latest_revision,
+            latest_snapshot_ref,
+            latest_snapshot_revision,
+            created_by,
+            updated_by,
+            created_at,
+            updated_at
+        from collaborative_document
+        order by updated_at desc, id desc
+        limit #{limit}
+    </select>
+
+    <select id="selectLatestByMember" resultType="com.contentworkflow.document.infrastructure.persistence.entity.CollaborativeDocumentEntity">
+        select
+            d.id,
+            d.lock_version as version,
+            d.doc_no,
+            d.title,
+            d.content,
+            d.latest_revision,
+            d.latest_snapshot_ref,
+            d.latest_snapshot_revision,
+            d.created_by,
+            d.updated_by,
+            d.created_at,
+            d.updated_at
+        from collaborative_document d
+        inner join collaborative_document_member m
+                on m.document_id = d.id
+        where m.member_id = #{memberId}
+        order by d.updated_at desc, d.id desc
+        limit #{limit}
+    </select>
+
+    <update id="conditionalUpdate">
+        update collaborative_document
+        set title = #{title},
+            content = #{content},
+            latest_revision = #{nextRevision},
+            updated_by = #{updatedBy},
+            updated_at = #{updatedAt},
+            lock_version = lock_version + 1
+        where id = #{id}
+          and lock_version = #{expectedVersion}
+          and latest_revision = #{expectedRevision}
+    </update>
+
+    <update id="updateSnapshotMetadata">
+        update collaborative_document
+        set latest_snapshot_ref = #{latestSnapshotRef},
+            latest_snapshot_revision = #{latestSnapshotRevision},
+            updated_by = #{updatedBy},
+            updated_at = #{updatedAt},
+            lock_version = lock_version + 1
+        where id = #{id}
+    </update>
+</mapper>

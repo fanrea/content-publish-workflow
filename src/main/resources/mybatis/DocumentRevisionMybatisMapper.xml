@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.contentworkflow.document.infrastructure.persistence.mybatis.DocumentRevisionMybatisMapper">
+
+    <select id="selectByDocumentIdOrderByRevisionDesc" resultType="com.contentworkflow.document.infrastructure.persistence.entity.DocumentRevisionEntity">
+        select
+            id,
+            document_id,
+            revision_no,
+            base_revision,
+            title,
+            content,
+            is_snapshot,
+            editor_id,
+            editor_name,
+            change_type,
+            change_summary,
+            created_at
+        from collaborative_document_revision
+        where document_id = #{documentId}
+        order by revision_no desc
+        limit #{limit}
+    </select>
+
+    <select id="selectLatestSnapshotByRevision" resultType="com.contentworkflow.document.infrastructure.persistence.entity.DocumentRevisionEntity">
+        select
+            id,
+            document_id,
+            revision_no,
+            base_revision,
+            title,
+            content,
+            is_snapshot,
+            editor_id,
+            editor_name,
+            change_type,
+            change_summary,
+            created_at
+        from collaborative_document_revision
+        where document_id = #{documentId}
+          and revision_no &lt;= #{revisionNo}
+          and is_snapshot = 1
+        order by revision_no desc
+        limit 1
+    </select>
+
+    <select id="selectByRevisionRangeAsc" resultType="com.contentworkflow.document.infrastructure.persistence.entity.DocumentRevisionEntity">
+        select
+            id,
+            document_id,
+            revision_no,
+            base_revision,
+            title,
+            content,
+            is_snapshot,
+            editor_id,
+            editor_name,
+            change_type,
+            change_summary,
+            created_at
+        from collaborative_document_revision
+        where document_id = #{documentId}
+          and revision_no &gt; #{fromRevisionExclusive}
+          and revision_no &lt;= #{toRevisionInclusive}
+        order by revision_no asc
+        limit #{limit}
+    </select>
+</mapper>

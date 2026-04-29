@@ -1,124 +1,74 @@
-﻿spring:
+spring:
   application:
-    name: content-publish-service
-  rabbitmq:
-    # Avoid connecting to RabbitMQ on startup via RabbitAdmin.
-    # This service enables MQ only when the outbox relay is explicitly turned on.
-    dynamic: false
-  profiles:
-    # 通过 profile 打开可选能力：
-    # 1. mysql: 显式启用 MySQL/Flyway 配置（与默认主路径保持一致，便于环境覆盖）
-    # 2. redis: 启用 Redis 缓存与 Redis readiness 检查（见 application-redis.yml）
-    # 3. rabbitmq: 启用 Outbox + RabbitMQ 配置样例（见 application-rabbitmq.yml）
-    # 4. ops: 运维/演示可观测性配置（见 application-ops.yml）
-    # 5. loadtest: 压测/基准测试运行参数（见 application-loadtest.yml）
-    # 6. xxl-job: recommended scheduler-center mode; disables local @Scheduled polling
-    active: ${SPRING_PROFILES_ACTIVE:}
+    name: collaborative-doc-service
   datasource:
-    # 默认走 MySQL，本地可配合 compose.local.yml 启动依赖；测试环境单独覆盖为 H2。
     url: ${DB_URL:jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/${DB_NAME:cpw}?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true}
     driver-class-name: ${DB_DRIVER:com.mysql.cj.jdbc.Driver}
     username: ${DB_USER:cpw}
     password: ${DB_PASSWORD:cpw}
-  sql:
-    init:
-      # 生产/本地 MySQL 统一交给 Flyway 管理。
-      mode: never
-      schema-locations: classpath:sql/schema.sql
   flyway:
     enabled: true
     locations: classpath:db/migration/mysql
     baseline-on-migrate: true
     validate-on-migrate: true
     connect-retries: 10
-  cache:
-    type: caffeine
-    caffeine:
-      spec: ${SPRING_CACHE_CAFFEINE_SPEC:initialCapacity=256,maximumSize=5000,expireAfterWrite=10m,recordStats}
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DB:0}
+      timeout: 2000ms
 
 server:
   port: 8080
-  # 服务部署在网关或 Ingress 后面时，转发头由框架统一处理。
   forward-headers-strategy: framework
 
 logging:
   pattern:
-    # 在控制台日志里直接输出请求链路标识，便于单机排查和面试演示。
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %5p [%thread] [%X{traceId:-},%X{requestId:-}] %logger{36} - %msg%n"
 
-management:
-  endpoints:
-    web:
-      exposure:
-        # 面向运维的基础端点与 Prometheus 指标端点。
-        include: health,info,metrics,prometheus
-  endpoint:
-    health:
-      probes:
-        # 开启 liveness / readiness 探针，适合容器化环境。
-        enabled: true
-      group:
-        # 默认不要强依赖 Redis 在线，避免本地未启动 Redis 时 readiness 直接失败。
-        readiness:
-          include: ping,db
-        liveness:
-          include: ping
-  info:
-    env:
-      enabled: true
-
-info:
-  app:
-    name: content-publish-service
-    mode: backend-api
-    architecture: frontend-backend-separated
-
-workflow:
-  cache:
-    # Redis profile 打开后可切到本地 Caffeine + Redis 两级缓存；当前先把两级缓存所需参数统一放在这里。
-    two-level-enabled: ${CACHE_TWO_LEVEL_ENABLED:false}
-    keyPrefix: ${CACHE_PREFIX:cpw:}
-    draftDetailTtl: ${CACHE_DRAFT_DETAIL_TTL:30s}
-    draftListTtl: ${CACHE_DRAFT_LIST_TTL:5s}
-    draftStatusCountTtl: ${CACHE_DRAFT_STATUS_COUNT_TTL:10s}
-    local:
-      initial-capacity: ${CACHE_LOCAL_INITIAL_CAPACITY:256}
-      maximum-size: ${CACHE_LOCAL_MAXIMUM_SIZE:5000}
-      expire-after-write: ${CACHE_LOCAL_EXPIRE_AFTER_WRITE:10m}
-      record-stats: ${CACHE_LOCAL_RECORD_STATS:true}
-  bootstrap:
-    # 本地联调时可切换 true；默认关闭，避免污染开发数据。
-    seedDraft: false
-  scheduler:
-    # Production should prefer the xxl-job profile; local @Scheduled remains as the fallback mode.
-    production-recommended: xxl-job
-    startup-report-enabled: true
-    local:
-      # Keep local @Scheduled polling for single-node development and smoke tests; disable it in xxl-job mode.
-      enabled: true
-  security:
-    jwt:
-      issuer: ${WORKFLOW_JWT_ISSUER:content-publish-workflow}
-      secret: ${WORKFLOW_JWT_SECRET:dev-only-change-this-secret-to-at-least-32-bytes}
-      clock-skew-seconds: ${WORKFLOW_JWT_CLOCK_SKEW_SECONDS:60}
-      access-token-ttl: ${WORKFLOW_JWT_ACCESS_TOKEN_TTL:2h}
-    login:
-      # 默认不内置任何可登录账号；本地演示请显式开启 demo profile。
-      demo-users: []
-  logging:
-    request:
-      slow-threshold: ${WORKFLOW_LOGGING_REQUEST_SLOW_THRESHOLD:2s}
-
-springdoc:
-  api-docs:
-    enabled: ${SPRINGDOC_API_DOCS_ENABLED:false}
-    path: /v3/api-docs
-  swagger-ui:
-    enabled: ${SPRINGDOC_SWAGGER_UI_ENABLED:false}
-    path: /swagger-ui
-
+# 仅加载文档协作相关 mapper，避免历史模块 XML 干扰启动。
 mybatis-plus:
-  mapper-locations: classpath*:mybatis/*.xml
+  mapper-locations:
+    - classpath*:mybatis/CollaborativeDocumentMybatisMapper.xml
+    - classpath*:mybatis/DocumentRevisionMybatisMapper.xml
+    - classpath*:mybatis/DocumentOperationMybatisMapper.xml
+    - classpath*:mybatis/DocumentMemberMybatisMapper.xml
   configuration:
     map-underscore-to-camel-case: true
     default-enum-type-handler: org.apache.ibatis.type.EnumTypeHandler
+
+workflow:
+  redis-cache:
+    enabled: ${DOC_REDIS_CACHE_ENABLED:false}
+    key-prefix: ${DOC_REDIS_CACHE_PREFIX:cpw:doc:cache:}
+    ttl-seconds: ${DOC_REDIS_CACHE_TTL_SECONDS:1800}
+  ingress:
+    rocketmq:
+      enabled: ${DOC_INGRESS_ROCKETMQ_ENABLED:false}
+      name-server: ${INGRESS_ROCKETMQ_NAME_SERVER:}
+      producer-group: ${INGRESS_ROCKETMQ_PRODUCER_GROUP:cpw_doc_ingress_producer}
+      consumer-group: ${INGRESS_ROCKETMQ_CONSUMER_GROUP:cpw_doc_ingress_consumer}
+      topic: ${INGRESS_ROCKETMQ_TOPIC:cpw_doc_ingress}
+      send-timeout-ms: ${INGRESS_ROCKETMQ_SEND_TIMEOUT_MS:1000}
+      max-retries: ${INGRESS_ROCKETMQ_MAX_RETRIES:2}
+      retry-backoff-ms: ${INGRESS_ROCKETMQ_RETRY_BACKOFF_MS:50}
+  event:
+    reliable:
+      retry-enabled: ${DOC_EVENT_RETRY_ENABLED:true}
+      retry-interval-ms: ${DOC_EVENT_RETRY_INTERVAL_MS:3000}
+      fetch-limit: ${DOC_EVENT_RETRY_FETCH_LIMIT:50}
+      lock-timeout-ms: ${DOC_EVENT_RETRY_LOCK_TIMEOUT_MS:30000}
+      max-attempts: ${DOC_EVENT_MAX_ATTEMPTS:16}
+      base-backoff-ms: ${DOC_EVENT_BASE_BACKOFF_MS:500}
+      max-backoff-ms: ${DOC_EVENT_MAX_BACKOFF_MS:60000}
+    rocketmq:
+      enabled: ${DOC_ROCKETMQ_ENABLED:false}
+      name-server: ${ROCKETMQ_NAME_SERVER:}
+      producer-group: ${ROCKETMQ_PRODUCER_GROUP:cpw_doc_event_producer}
+      topic: ${ROCKETMQ_DOC_TOPIC:cpw_doc_event}
+      send-timeout-ms: ${ROCKETMQ_SEND_TIMEOUT_MS:3000}
+      delivery-mode: ${ROCKETMQ_DELIVERY_MODE:SYNC}
+      max-retries: ${ROCKETMQ_MAX_RETRIES:2}
+      retry-backoff-ms: ${ROCKETMQ_RETRY_BACKOFF_MS:100}
