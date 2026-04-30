@@ -2,6 +2,8 @@ package com.contentworkflow.document.application;
 
 import com.contentworkflow.document.application.cache.DocumentCacheService;
 import com.contentworkflow.document.application.event.DocumentEventPublisher;
+import com.contentworkflow.document.application.realtime.crdt.CrdtSnapshotCodec;
+import com.contentworkflow.document.application.storage.DocumentDeltaStore;
 import com.contentworkflow.document.application.storage.DocumentSnapshotStore;
 import com.contentworkflow.document.domain.entity.DocumentRevision;
 import com.contentworkflow.document.domain.enums.DocumentChangeType;
@@ -11,7 +13,6 @@ import com.contentworkflow.document.infrastructure.persistence.entity.Collaborat
 import com.contentworkflow.document.infrastructure.persistence.entity.DocumentOperationEntity;
 import com.contentworkflow.document.infrastructure.persistence.entity.DocumentRevisionEntity;
 import com.contentworkflow.document.infrastructure.persistence.mybatis.CollaborativeDocumentMybatisMapper;
-import com.contentworkflow.document.infrastructure.persistence.mybatis.DocumentOperationMybatisMapper;
 import com.contentworkflow.document.infrastructure.persistence.mybatis.DocumentRevisionMybatisMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -26,6 +27,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -37,7 +39,7 @@ class DocumentCollaborationServiceTest {
     @Mock
     private DocumentRevisionMybatisMapper revisionMapper;
     @Mock
-    private DocumentOperationMybatisMapper operationMapper;
+    private DocumentDeltaStore deltaStore;
     @Mock
     private DocumentPermissionService permissionService;
     @Mock
@@ -54,7 +56,7 @@ class DocumentCollaborationServiceTest {
         service = new DocumentCollaborationService(
                 documentMapper,
                 revisionMapper,
-                operationMapper,
+                deltaStore,
                 permissionService,
                 cacheService,
                 eventPublisher,
@@ -73,11 +75,19 @@ class DocumentCollaborationServiceTest {
         service.createDocument("DOC-1", "Title", "hello", "u1", "Alice");
 
         ArgumentCaptor<String> snapshotRefCaptor = ArgumentCaptor.forClass(String.class);
-        verify(snapshotStore).put(snapshotRefCaptor.capture(), eq("hello"));
+        ArgumentCaptor<String> snapshotPayloadCaptor = ArgumentCaptor.forClass(String.class);
+        verify(snapshotStore).put(snapshotRefCaptor.capture(), snapshotPayloadCaptor.capture());
 
         String snapshotRef = snapshotRefCaptor.getValue();
-        assertThat(snapshotRef).startsWith("101:1:");
+        assertThat(snapshotRef).isEqualTo("snapshot/101/1.bin");
+        CrdtSnapshotCodec codec = new CrdtSnapshotCodec();
+        assertThat(codec.decodeToText(snapshotPayloadCaptor.getValue())).isEqualTo("hello");
         verify(documentMapper).updateSnapshotMetadata(eq(101L), eq(snapshotRef), eq(1), eq("Alice"), any());
+
+        ArgumentCaptor<DocumentRevisionEntity> revisionCaptor = ArgumentCaptor.forClass(DocumentRevisionEntity.class);
+        verify(revisionMapper).insert(revisionCaptor.capture());
+        assertThat(revisionCaptor.getValue().getIsSnapshot()).isTrue();
+        assertThat(revisionCaptor.getValue().getContent()).isNull();
     }
 
     @Test
@@ -123,8 +133,8 @@ class DocumentCollaborationServiceTest {
         when(revisionMapper.selectByDocumentIdAndRevisionNo(1L, 3)).thenReturn(Optional.of(target));
         when(revisionMapper.selectLatestSnapshotByRevision(1L, 3)).thenReturn(Optional.of(snapshot));
         when(revisionMapper.selectByRevisionRangeAsc(1L, 1, 3, 2)).thenReturn(List.of(revision2, revision3));
-        when(operationMapper.selectByRevision(1L, 2)).thenReturn(Optional.of(op2));
-        when(operationMapper.selectByRevision(1L, 3)).thenReturn(Optional.of(op3));
+        when(deltaStore.findByRevision(1L, 2)).thenReturn(Optional.of(op2));
+        when(deltaStore.findByRevision(1L, 3)).thenReturn(Optional.of(op3));
 
         DocumentRevision revision = service.getRevision(1L, 3);
 
@@ -142,7 +152,6 @@ class DocumentCollaborationServiceTest {
         when(documentMapper.conditionalUpdate(eq(1L), eq(5L), eq(2), eq("new-title"), eq("abZc"), eq(3), eq("Alice"), any()))
                 .thenReturn(1);
         when(revisionMapper.insert(any(DocumentRevisionEntity.class))).thenReturn(1);
-        when(operationMapper.insert(any(DocumentOperationEntity.class))).thenReturn(1);
 
         DocumentCollaborationService.DocumentEditResult result = service.editDocument(
                 1L,
@@ -164,13 +173,140 @@ class DocumentCollaborationServiceTest {
         assertThat(revisionCaptor.getValue().getContent()).isNull();
 
         ArgumentCaptor<DocumentOperationEntity> operationCaptor = ArgumentCaptor.forClass(DocumentOperationEntity.class);
-        verify(operationMapper).insert(operationCaptor.capture());
+        verify(deltaStore).appendIfAbsent(operationCaptor.capture());
         assertThat(operationCaptor.getValue().getRevisionNo()).isEqualTo(3);
         assertThat(operationCaptor.getValue().getBaseRevision()).isEqualTo(2);
         assertThat(operationCaptor.getValue().getOpType()).isEqualTo(DocumentOpType.REPLACE);
         assertThat(operationCaptor.getValue().getOpPosition()).isEqualTo(0);
         assertThat(operationCaptor.getValue().getOpLength()).isEqualTo(3);
         assertThat(operationCaptor.getValue().getOpText()).isEqualTo("abZc");
+        verify(snapshotStore, never()).put(any(), any());
+    }
+
+    @Test
+    void editDocument_shouldPersistSnapshotToObjectStoreWhenSnapshotRevision() {
+        CollaborativeDocumentEntity current = buildDocument(1L, 9L, "old-title", "abc", 99);
+        CollaborativeDocumentEntity saved = buildDocument(1L, 10L, "new-title", "abZc", 100);
+
+        when(documentMapper.selectById(1L)).thenReturn(current, saved);
+        when(permissionService.requireCanEdit(1L, "u1")).thenReturn(DocumentMemberRole.EDITOR);
+        when(documentMapper.conditionalUpdate(eq(1L), eq(9L), eq(99), eq("new-title"), eq("abZc"), eq(100), eq("Alice"), any()))
+                .thenReturn(1);
+        when(revisionMapper.insert(any(DocumentRevisionEntity.class))).thenReturn(1);
+
+        service.editDocument(
+                1L,
+                99,
+                "new-title",
+                "abZc",
+                "u1",
+                "Alice",
+                "summary",
+                DocumentChangeType.EDIT
+        );
+
+        ArgumentCaptor<String> snapshotPayloadCaptor = ArgumentCaptor.forClass(String.class);
+        verify(snapshotStore).put(eq("snapshot/1/100.bin"), snapshotPayloadCaptor.capture());
+        CrdtSnapshotCodec codec = new CrdtSnapshotCodec();
+        assertThat(codec.decodeToText(snapshotPayloadCaptor.getValue())).isEqualTo("abZc");
+        verify(documentMapper).updateSnapshotMetadata(eq(1L), eq("snapshot/1/100.bin"), eq(100), eq("Alice"), any());
+    }
+
+    @Test
+    void getRevision_shouldLoadSnapshotFromObjectStoreWhenSnapshotContentMissingInMysql() {
+        CollaborativeDocumentEntity document = buildDocument(1L, 4L, "title", "aXYd", 101);
+        document.setLatestSnapshotRef("legacy/ref/101");
+        DocumentRevisionEntity target = new DocumentRevisionEntity();
+        target.setDocumentId(1L);
+        target.setRevisionNo(101);
+        target.setTitle("title-101");
+        target.setContent(null);
+        target.setIsSnapshot(true);
+
+        DocumentRevisionEntity snapshot = new DocumentRevisionEntity();
+        snapshot.setDocumentId(1L);
+        snapshot.setRevisionNo(101);
+        snapshot.setContent(null);
+        snapshot.setIsSnapshot(true);
+
+        when(documentMapper.selectById(1L)).thenReturn(document, document);
+        when(revisionMapper.selectByDocumentIdAndRevisionNo(1L, 101)).thenReturn(Optional.of(target));
+        when(revisionMapper.selectLatestSnapshotByRevision(1L, 101)).thenReturn(Optional.of(snapshot));
+        when(snapshotStore.get("snapshot/1/101.bin")).thenReturn(Optional.empty());
+        when(snapshotStore.get("legacy/ref/101")).thenReturn(Optional.of("snapshot-body"));
+
+        DocumentRevision revision = service.getRevision(1L, 101);
+
+        assertThat(revision.getContent()).isEqualTo("snapshot-body");
+    }
+
+    @Test
+    void getRevision_shouldKeepCompatibilityForPlainTextSnapshotPayload() {
+        CollaborativeDocumentEntity document = buildDocument(1L, 4L, "title", "ignored", 101);
+        DocumentRevisionEntity target = new DocumentRevisionEntity();
+        target.setDocumentId(1L);
+        target.setRevisionNo(101);
+        target.setTitle("title-101");
+        target.setContent(null);
+        target.setIsSnapshot(true);
+
+        DocumentRevisionEntity snapshot = new DocumentRevisionEntity();
+        snapshot.setDocumentId(1L);
+        snapshot.setRevisionNo(101);
+        snapshot.setContent(null);
+        snapshot.setIsSnapshot(true);
+
+        when(documentMapper.selectById(1L)).thenReturn(document);
+        when(revisionMapper.selectByDocumentIdAndRevisionNo(1L, 101)).thenReturn(Optional.of(target));
+        when(revisionMapper.selectLatestSnapshotByRevision(1L, 101)).thenReturn(Optional.of(snapshot));
+        when(snapshotStore.get("snapshot/1/101.bin")).thenReturn(Optional.of("plain-snapshot-body"));
+
+        DocumentRevision revision = service.getRevision(1L, 101);
+
+        assertThat(revision.getContent()).isEqualTo("plain-snapshot-body");
+    }
+
+    @Test
+    void getRevision_shouldDecodeCrdtEncodedSnapshotAndReplayOperations() {
+        CollaborativeDocumentEntity document = buildDocument(1L, 4L, "title", "ignored", 102);
+        DocumentRevisionEntity target = new DocumentRevisionEntity();
+        target.setDocumentId(1L);
+        target.setRevisionNo(102);
+        target.setTitle("title-102");
+        target.setContent(null);
+        target.setIsSnapshot(false);
+
+        DocumentRevisionEntity snapshot = new DocumentRevisionEntity();
+        snapshot.setDocumentId(1L);
+        snapshot.setRevisionNo(101);
+        snapshot.setContent(null);
+        snapshot.setIsSnapshot(true);
+
+        DocumentRevisionEntity revision102 = new DocumentRevisionEntity();
+        revision102.setDocumentId(1L);
+        revision102.setRevisionNo(102);
+
+        DocumentOperationEntity op102 = new DocumentOperationEntity();
+        op102.setDocumentId(1L);
+        op102.setRevisionNo(102);
+        op102.setOpType(DocumentOpType.INSERT);
+        op102.setOpPosition(3);
+        op102.setOpLength(0);
+        op102.setOpText("d");
+
+        CrdtSnapshotCodec codec = new CrdtSnapshotCodec();
+        String encodedSnapshot = codec.encodeText("abc");
+
+        when(documentMapper.selectById(1L)).thenReturn(document);
+        when(revisionMapper.selectByDocumentIdAndRevisionNo(1L, 102)).thenReturn(Optional.of(target));
+        when(revisionMapper.selectLatestSnapshotByRevision(1L, 102)).thenReturn(Optional.of(snapshot));
+        when(revisionMapper.selectByRevisionRangeAsc(1L, 101, 102, 1)).thenReturn(List.of(revision102));
+        when(deltaStore.findByRevision(1L, 102)).thenReturn(Optional.of(op102));
+        when(snapshotStore.get("snapshot/1/101.bin")).thenReturn(Optional.of(encodedSnapshot));
+
+        DocumentRevision revision = service.getRevision(1L, 102);
+
+        assertThat(revision.getContent()).isEqualTo("abcd");
     }
 
     private CollaborativeDocumentEntity buildDocument(Long id,
@@ -185,7 +321,7 @@ class DocumentCollaborationServiceTest {
         entity.setTitle(title);
         entity.setContent(content);
         entity.setLatestRevision(revision);
-        entity.setLatestSnapshotRef("1:" + revision + ":1000");
+        entity.setLatestSnapshotRef("snapshot/1/" + revision + ".bin");
         entity.setLatestSnapshotRevision(revision);
         entity.setCreatedBy("system");
         entity.setUpdatedBy("system");

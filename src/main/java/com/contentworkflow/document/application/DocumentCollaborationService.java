@@ -4,6 +4,8 @@ import com.contentworkflow.common.exception.BusinessException;
 import com.contentworkflow.document.application.cache.DocumentCacheService;
 import com.contentworkflow.document.application.event.DocumentDomainEvent;
 import com.contentworkflow.document.application.event.DocumentEventPublisher;
+import com.contentworkflow.document.application.realtime.crdt.CrdtSnapshotCodec;
+import com.contentworkflow.document.application.storage.DocumentDeltaStore;
 import com.contentworkflow.document.application.storage.DocumentSnapshotStore;
 import com.contentworkflow.document.domain.entity.CollaborativeDocument;
 import com.contentworkflow.document.domain.entity.DocumentMember;
@@ -15,8 +17,8 @@ import com.contentworkflow.document.infrastructure.persistence.entity.Collaborat
 import com.contentworkflow.document.infrastructure.persistence.entity.DocumentOperationEntity;
 import com.contentworkflow.document.infrastructure.persistence.entity.DocumentRevisionEntity;
 import com.contentworkflow.document.infrastructure.persistence.mybatis.CollaborativeDocumentMybatisMapper;
-import com.contentworkflow.document.infrastructure.persistence.mybatis.DocumentOperationMybatisMapper;
 import com.contentworkflow.document.infrastructure.persistence.mybatis.DocumentRevisionMybatisMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,6 +26,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -33,25 +36,27 @@ public class DocumentCollaborationService {
     private static final int MAX_LIST_LIMIT = 100;
     private static final int SNAPSHOT_INTERVAL = resolveSnapshotInterval();
     private static final int MAX_SNAPSHOT_REPLAY_OPS = 2000;
+    private static final CrdtSnapshotCodec CRDT_SNAPSHOT_CODEC = new CrdtSnapshotCodec();
 
     private final CollaborativeDocumentMybatisMapper documentMapper;
     private final DocumentRevisionMybatisMapper revisionMapper;
-    private final DocumentOperationMybatisMapper operationMapper;
+    private final DocumentDeltaStore deltaStore;
     private final DocumentPermissionService permissionService;
     private final DocumentCacheService cacheService;
     private final DocumentEventPublisher eventPublisher;
     private final DocumentSnapshotStore snapshotStore;
 
+    @Autowired
     public DocumentCollaborationService(CollaborativeDocumentMybatisMapper documentMapper,
                                         DocumentRevisionMybatisMapper revisionMapper,
-                                        DocumentOperationMybatisMapper operationMapper,
+                                        DocumentDeltaStore deltaStore,
                                         DocumentPermissionService permissionService,
                                         DocumentCacheService cacheService,
                                         DocumentEventPublisher eventPublisher,
                                         DocumentSnapshotStore snapshotStore) {
         this.documentMapper = documentMapper;
         this.revisionMapper = revisionMapper;
-        this.operationMapper = operationMapper;
+        this.deltaStore = deltaStore;
         this.permissionService = permissionService;
         this.cacheService = cacheService;
         this.eventPublisher = eventPublisher;
@@ -84,7 +89,8 @@ public class DocumentCollaborationService {
         revision.setRevisionNo(1);
         revision.setBaseRevision(0);
         revision.setTitle(normalizedTitle);
-        revision.setContent(normalizedContent);
+        // Snapshot body is persisted via snapshotStore; revision table keeps metadata catalog only.
+        revision.setContent(null);
         revision.setIsSnapshot(true);
         revision.setEditorId(normalizedEditorId);
         revision.setEditorName(normalizedEditorName);
@@ -94,14 +100,7 @@ public class DocumentCollaborationService {
         revisionMapper.insert(revision);
 
         String initialSnapshotRef = buildSnapshotRef(entity.getId(), revision.getRevisionNo());
-        snapshotStore.put(initialSnapshotRef, normalizedContent);
-        documentMapper.updateSnapshotMetadata(
-                entity.getId(),
-                initialSnapshotRef,
-                revision.getRevisionNo(),
-                normalizedEditorName,
-                LocalDateTime.now()
-        );
+        persistLatestSnapshot(entity.getId(), revision.getRevisionNo(), initialSnapshotRef, normalizedContent, normalizedEditorName);
         entity.setLatestSnapshotRef(initialSnapshotRef);
         entity.setLatestSnapshotRevision(revision.getRevisionNo());
 
@@ -193,7 +192,8 @@ public class DocumentCollaborationService {
         revision.setRevisionNo(nextRevision);
         revision.setBaseRevision(normalizedBaseRevision);
         revision.setTitle(normalizedTitle);
-        revision.setContent(snapshotRevision ? normalizedContent : null);
+        // Snapshot body is persisted via snapshotStore; revision table keeps metadata catalog only.
+        revision.setContent(null);
         revision.setIsSnapshot(snapshotRevision);
         revision.setEditorId(normalizedEditorId);
         revision.setEditorName(normalizedEditorName);
@@ -216,7 +216,11 @@ public class DocumentCollaborationService {
         operation.setEditorName(normalizedEditorName);
         operation.setCreatedAt(now);
         operation.prepareForInsert();
-        operationMapper.insert(operation);
+        deltaStore.appendIfAbsent(operation);
+        if (snapshotRevision) {
+            String snapshotRef = buildSnapshotRef(documentId, nextRevision);
+            persistLatestSnapshot(documentId, nextRevision, snapshotRef, normalizedContent, normalizedEditorName);
+        }
 
         CollaborativeDocumentEntity saved = requireDocument(documentId);
         cacheService.put(saved);
@@ -423,7 +427,7 @@ public class DocumentCollaborationService {
                         "DOCUMENT_SNAPSHOT_NOT_FOUND",
                         "snapshot not found, documentId=" + documentId + ", revisionNo=" + targetRevision.getRevisionNo()
                 ));
-        String rebuilt = snapshot.getContent() == null ? "" : snapshot.getContent();
+        String rebuilt = loadSnapshotContent(documentId, snapshot);
         int replayCount = targetRevision.getRevisionNo() - snapshot.getRevisionNo();
         if (replayCount <= 0) {
             return rebuilt;
@@ -451,7 +455,7 @@ public class DocumentCollaborationService {
             );
         }
         for (DocumentRevisionEntity replayRevision : revisionsToReplay) {
-            DocumentOperationEntity operation = operationMapper.selectByRevision(documentId, replayRevision.getRevisionNo())
+            DocumentOperationEntity operation = deltaStore.findByRevision(documentId, replayRevision.getRevisionNo())
                     .orElseThrow(() -> new BusinessException(
                             "DOCUMENT_OPERATION_NOT_FOUND",
                             "replay operation missing, documentId=" + documentId
@@ -494,7 +498,62 @@ public class DocumentCollaborationService {
         if (documentId == null || revisionNo == null) {
             throw new BusinessException("INVALID_ARGUMENT", "snapshot reference requires documentId and revisionNo");
         }
-        return documentId + ":" + revisionNo + ":" + System.currentTimeMillis();
+        return "snapshot/" + documentId + "/" + revisionNo + ".bin";
+    }
+
+    private void persistLatestSnapshot(Long documentId,
+                                       Integer revisionNo,
+                                       String snapshotRef,
+                                       String content,
+                                       String updatedBy) {
+        snapshotStore.put(snapshotRef, CRDT_SNAPSHOT_CODEC.encodeText(content == null ? "" : content));
+        documentMapper.updateSnapshotMetadata(
+                documentId,
+                snapshotRef,
+                revisionNo,
+                updatedBy,
+                LocalDateTime.now()
+        );
+    }
+
+    private String loadSnapshotContent(Long documentId, DocumentRevisionEntity snapshotRevision) {
+        if (snapshotRevision.getContent() != null) {
+            return snapshotRevision.getContent();
+        }
+
+        String snapshotRef = buildSnapshotRef(documentId, snapshotRevision.getRevisionNo());
+        Optional<String> loaded = snapshotStore.get(snapshotRef);
+        if (loaded.isPresent()) {
+            return decodeSnapshotPayload(loaded.get());
+        }
+
+        CollaborativeDocumentEntity document = documentMapper.selectById(documentId);
+        if (document != null
+                && Objects.equals(document.getLatestSnapshotRevision(), snapshotRevision.getRevisionNo())
+                && document.getLatestSnapshotRef() != null
+                && !document.getLatestSnapshotRef().isBlank()) {
+            return snapshotStore.get(document.getLatestSnapshotRef())
+                    .map(this::decodeSnapshotPayload)
+                    .orElseThrow(() -> new BusinessException(
+                            "DOCUMENT_SNAPSHOT_NOT_FOUND",
+                            "snapshot object missing, documentId=" + documentId + ", revisionNo=" + snapshotRevision.getRevisionNo()
+                    ));
+        }
+
+        throw new BusinessException(
+                "DOCUMENT_SNAPSHOT_NOT_FOUND",
+                "snapshot object missing, documentId=" + documentId + ", revisionNo=" + snapshotRevision.getRevisionNo()
+        );
+    }
+
+    private String decodeSnapshotPayload(String payload) {
+        if (payload == null) {
+            return "";
+        }
+        if (!CRDT_SNAPSHOT_CODEC.isEncodedPayload(payload)) {
+            return payload;
+        }
+        return CRDT_SNAPSHOT_CODEC.decodeToText(payload);
     }
 
     public record DocumentEditResult(

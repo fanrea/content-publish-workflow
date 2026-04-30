@@ -5,6 +5,9 @@ import com.contentworkflow.document.application.DocumentPermissionService;
 import com.contentworkflow.document.application.cache.DocumentCacheService;
 import com.contentworkflow.document.application.event.DocumentDomainEvent;
 import com.contentworkflow.document.application.event.DocumentEventPublisher;
+import com.contentworkflow.document.application.realtime.crdt.CrdtSnapshotCodec;
+import com.contentworkflow.document.application.storage.DocumentDeltaStore;
+import com.contentworkflow.document.application.storage.DocumentSnapshotStore;
 import com.contentworkflow.document.domain.entity.CollaborativeDocument;
 import com.contentworkflow.document.domain.entity.DocumentOperation;
 import com.contentworkflow.document.domain.entity.DocumentRevision;
@@ -15,10 +18,9 @@ import com.contentworkflow.document.infrastructure.persistence.entity.DocumentOp
 import com.contentworkflow.document.infrastructure.persistence.entity.DocumentRevisionEntity;
 import com.contentworkflow.document.infrastructure.persistence.mybatis.CollaborativeDocumentMybatisMapper;
 import com.contentworkflow.document.infrastructure.persistence.mybatis.DocumentCommentMybatisMapper;
-import com.contentworkflow.document.infrastructure.persistence.mybatis.DocumentOperationMybatisMapper;
 import com.contentworkflow.document.infrastructure.persistence.mybatis.DocumentRevisionMybatisMapper;
 import com.contentworkflow.document.interfaces.ws.DocumentWsOperation;
-import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,6 +28,8 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+
 @Service
 public class DocumentOperationService {
 
@@ -33,29 +37,45 @@ public class DocumentOperationService {
     private static final int MAX_REPLAY_LIMIT = 500;
     private static final int MAX_REBASE_OPS = 1000;
     private static final int MAX_SNAPSHOT_REPLAY_OPS = 2000;
+    private static final int MAX_ACTOR_SINGLE_WRITER_RETRIES = 8;
+    private static final int MAX_BASE_VECTOR_ENTRIES = 128;
+    private static final int MAX_BASE_VECTOR_ACTOR_ID_LENGTH = 128;
+    private static final int MAX_DELTA_BATCH_ID_LENGTH = 128;
+    private static final String DELTA_BATCH_SESSION_PREFIX = "delta-batch:";
+    private static final CrdtSnapshotCodec CRDT_SNAPSHOT_CODEC = new CrdtSnapshotCodec();
 
     private final CollaborativeDocumentMybatisMapper documentMapper;
     private final DocumentRevisionMybatisMapper revisionMapper;
-    private final DocumentOperationMybatisMapper operationMapper;
+    private final DocumentDeltaStore deltaStore;
+    private final DocumentSnapshotStore snapshotStore;
     private final DocumentCommentMybatisMapper commentMapper;
     private final DocumentPermissionService permissionService;
     private final DocumentCacheService cacheService;
     private final DocumentEventPublisher eventPublisher;
+    private final MergeEngine mergeEngine;
+    private final boolean actorSingleWriterEnabled;
 
     public DocumentOperationService(CollaborativeDocumentMybatisMapper documentMapper,
                                     DocumentRevisionMybatisMapper revisionMapper,
-                                    DocumentOperationMybatisMapper operationMapper,
+                                    DocumentDeltaStore deltaStore,
+                                    DocumentSnapshotStore snapshotStore,
                                     DocumentCommentMybatisMapper commentMapper,
                                     DocumentPermissionService permissionService,
                                     DocumentCacheService cacheService,
-                                    DocumentEventPublisher eventPublisher) {
+                                    DocumentEventPublisher eventPublisher,
+                                    MergeEngine mergeEngine,
+                                    @Value("${workflow.realtime.actor-single-writer.enabled:true}")
+                                    boolean actorSingleWriterEnabled) {
         this.documentMapper = documentMapper;
         this.revisionMapper = revisionMapper;
-        this.operationMapper = operationMapper;
+        this.deltaStore = deltaStore;
+        this.snapshotStore = snapshotStore;
         this.commentMapper = commentMapper;
         this.permissionService = permissionService;
         this.cacheService = cacheService;
         this.eventPublisher = eventPublisher;
+        this.mergeEngine = mergeEngine;
+        this.actorSingleWriterEnabled = actorSingleWriterEnabled;
     }
 
     @Transactional
@@ -74,6 +94,9 @@ public class DocumentOperationService {
                 editorId,
                 editorName,
                 op,
+                null,
+                null,
+                null,
                 null,
                 null,
                 null
@@ -100,6 +123,9 @@ public class DocumentOperationService {
                 op,
                 requestedTitle,
                 requestedChangeSummary,
+                null,
+                null,
+                null,
                 null
         );
     }
@@ -115,9 +141,44 @@ public class DocumentOperationService {
                                       String requestedTitle,
                                       String requestedChangeSummary,
                                       DocumentChangeType requestedChangeType) {
+        return applyOperation(
+                documentId,
+                baseRevision,
+                logicalSessionId,
+                clientSeq,
+                editorId,
+                editorName,
+                op,
+                requestedTitle,
+                requestedChangeSummary,
+                requestedChangeType,
+                null,
+                null,
+                null
+        );
+    }
+
+    @Transactional
+    public ApplyResult applyOperation(Long documentId,
+                                      Integer baseRevision,
+                                      String logicalSessionId,
+                                      Long clientSeq,
+                                      String editorId,
+                                      String editorName,
+                                      DocumentWsOperation op,
+                                      String requestedTitle,
+                                      String requestedChangeSummary,
+                                      DocumentChangeType requestedChangeType,
+                                      String deltaBatchId,
+                                      Long clientClock,
+                                      Map<String, Long> baseVector) {
         Long normalizedDocId = normalizeDocumentId(documentId);
         Integer normalizedBaseRevision = normalizeBaseRevision(baseRevision);
         String normalizedSessionId = normalizeLogicalSessionId(logicalSessionId);
+        String normalizedDeltaBatchId = normalizeOptionalDeltaBatchId(deltaBatchId);
+        Long normalizedClientClock = normalizeOptionalClientClock(clientClock);
+        Map<String, Long> normalizedBaseVector = normalizeOptionalBaseVector(baseVector);
+        String idempotencySessionId = resolveIdempotencySessionId(normalizedSessionId, normalizedDeltaBatchId);
         Long normalizedClientSeq = normalizeClientSeq(clientSeq);
         String normalizedEditorId = normalizeEditorId(editorId);
         String normalizedEditorName = normalizeEditorName(editorName);
@@ -128,9 +189,9 @@ public class DocumentOperationService {
 
         permissionService.requireCanEdit(normalizedDocId, normalizedEditorId);
 
-        DocumentOperationEntity processed = operationMapper.selectBySessionSeq(
+        DocumentOperationEntity processed = deltaStore.findBySessionSeq(
                 normalizedDocId,
-                normalizedSessionId,
+                idempotencySessionId,
                 normalizedClientSeq
         ).orElse(null);
         if (processed != null) {
@@ -144,123 +205,170 @@ public class DocumentOperationService {
             );
         }
 
-        CollaborativeDocumentEntity current = requireDocument(normalizedDocId);
-        Integer currentRevision = current.getLatestRevision();
-        if (normalizedBaseRevision > currentRevision) {
-            throw concurrentModification(normalizedDocId, normalizedBaseRevision, currentRevision);
-        }
-
-        DocumentWsOperation effectiveOp = copyOperation(normalizedOp);
-        int effectiveBaseRevision = normalizedBaseRevision;
-        if (!Objects.equals(currentRevision, normalizedBaseRevision)) {
-            int lag = currentRevision - normalizedBaseRevision;
-            if (lag > MAX_REBASE_OPS) {
-                throw concurrentModification(normalizedDocId, normalizedBaseRevision, currentRevision);
+        int maxAttempts = actorSingleWriterEnabled ? MAX_ACTOR_SINGLE_WRITER_RETRIES + 1 : 1;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            if (attempt > 1) {
+                DocumentOperationEntity duplicated = deltaStore.findBySessionSeq(
+                        normalizedDocId,
+                        idempotencySessionId,
+                        normalizedClientSeq
+                ).orElse(null);
+                if (duplicated != null) {
+                    CollaborativeDocumentEntity current = requireDocument(normalizedDocId);
+                    cacheService.put(current);
+                    return new ApplyResult(
+                            true,
+                            toDocument(current),
+                            toOperation(duplicated),
+                            null
+                    );
+                }
             }
-            List<DocumentOperationEntity> appliedOps = operationMapper.selectByRevisionRange(
+
+            PreparedOperation prepared = prepareOperationAttempt(
                     normalizedDocId,
                     normalizedBaseRevision,
-                    lag
-            );
-            if (appliedOps.size() < lag) {
-                throw concurrentModification(normalizedDocId, normalizedBaseRevision, currentRevision);
-            }
-            effectiveOp = rebaseOperation(
-                    effectiveOp,
-                    appliedOps,
                     normalizedEditorId,
-                    normalizedClientSeq
+                    normalizedClientSeq,
+                    normalizedOp,
+                    normalizedRequestedTitle
             );
-            effectiveBaseRevision = currentRevision;
-        }
 
-        String currentContent = current.getContent() == null ? "" : current.getContent();
-        String nextTitle = resolveNextTitle(current.getTitle(), normalizedRequestedTitle);
-        String nextContent = applyTextOperation(currentContent, effectiveOp);
-        LocalDateTime now = LocalDateTime.now();
-        int nextRevision = effectiveBaseRevision + 1;
-
-        int updated = documentMapper.conditionalUpdate(
-                normalizedDocId,
-                current.getVersion(),
-                effectiveBaseRevision,
-                nextTitle,
-                nextContent,
-                nextRevision,
-                normalizedEditorName,
-                now
-        );
-        if (updated == 0) {
-            CollaborativeDocumentEntity latest = requireDocument(normalizedDocId);
-            throw concurrentModification(normalizedDocId, effectiveBaseRevision, latest.getLatestRevision());
-        }
-
-        migrateOpenCommentAnchors(normalizedDocId, effectiveOp);
-
-        DocumentRevisionEntity revision = new DocumentRevisionEntity();
-        boolean snapshotRevision = shouldStoreSnapshotRevision(nextRevision);
-        revision.setDocumentId(normalizedDocId);
-        revision.setRevisionNo(nextRevision);
-        revision.setBaseRevision(effectiveBaseRevision);
-        revision.setTitle(nextTitle);
-        revision.setContent(snapshotRevision ? nextContent : null);
-        revision.setIsSnapshot(snapshotRevision);
-        revision.setEditorId(normalizedEditorId);
-        revision.setEditorName(normalizedEditorName);
-        revision.setChangeType(resolvedChangeType);
-        revision.setChangeSummary(resolveChangeSummary(normalizedRequestedChangeSummary, effectiveOp, resolvedChangeType));
-        revision.setCreatedAt(now);
-        revision.prepareForInsert();
-        revisionMapper.insert(revision);
-
-        DocumentOperationEntity operation = new DocumentOperationEntity();
-        operation.setDocumentId(normalizedDocId);
-        operation.setRevisionNo(nextRevision);
-        operation.setBaseRevision(effectiveBaseRevision);
-        operation.setSessionId(normalizedSessionId);
-        operation.setClientSeq(normalizedClientSeq);
-        operation.setOpType(effectiveOp.getOpType());
-        operation.setOpPosition(effectiveOp.getPosition());
-        operation.setOpLength(effectiveOp.getLength() == null ? 0 : effectiveOp.getLength());
-        operation.setOpText(effectiveOp.getText());
-        operation.setEditorId(normalizedEditorId);
-        operation.setEditorName(normalizedEditorName);
-        operation.setCreatedAt(now);
-        operation.prepareForInsert();
-
-        try {
-            operationMapper.insert(operation);
-        } catch (DataIntegrityViolationException ex) {
-            DocumentOperationEntity duplicated = operationMapper.selectBySessionSeq(
+            LocalDateTime now = LocalDateTime.now();
+            int updated = updateDocumentForOperation(
                     normalizedDocId,
-                    normalizedSessionId,
-                    normalizedClientSeq
-            ).orElseThrow(() -> ex);
+                    prepared,
+                    normalizedEditorName,
+                    now
+            );
+            if (updated == 0) {
+                if (actorSingleWriterEnabled && attempt < maxAttempts) {
+                    continue;
+                }
+                CollaborativeDocumentEntity latest = requireDocument(normalizedDocId);
+                throw concurrentModification(
+                        normalizedDocId,
+                        prepared.effectiveBaseRevision(),
+                        latest.getLatestRevision()
+                );
+            }
+
+            migrateOpenCommentAnchors(normalizedDocId, prepared.effectiveOp());
+
+            DocumentRevisionEntity revision = new DocumentRevisionEntity();
+            boolean snapshotRevision = shouldStoreSnapshotRevision(prepared.nextRevision());
+            revision.setDocumentId(normalizedDocId);
+            revision.setRevisionNo(prepared.nextRevision());
+            revision.setBaseRevision(prepared.effectiveBaseRevision());
+            revision.setTitle(prepared.nextTitle());
+            // Snapshot body is persisted via snapshotStore; revision table keeps metadata catalog only.
+            revision.setContent(null);
+            revision.setIsSnapshot(snapshotRevision);
+            revision.setEditorId(normalizedEditorId);
+            revision.setEditorName(normalizedEditorName);
+            revision.setChangeType(resolvedChangeType);
+            revision.setChangeSummary(resolveChangeSummary(
+                    normalizedRequestedChangeSummary,
+                    prepared.effectiveOp(),
+                    resolvedChangeType
+            ));
+            revision.setCreatedAt(now);
+            revision.prepareForInsert();
+            revisionMapper.insert(revision);
+            if (snapshotRevision) {
+                String snapshotRef = buildSnapshotRef(normalizedDocId, prepared.nextRevision());
+                persistLatestSnapshot(
+                        normalizedDocId,
+                        prepared.nextRevision(),
+                        snapshotRef,
+                        prepared.nextContent(),
+                        normalizedEditorName
+                );
+            }
+
+            DocumentOperationEntity operation = new DocumentOperationEntity();
+            operation.setDocumentId(normalizedDocId);
+            operation.setRevisionNo(prepared.nextRevision());
+            operation.setBaseRevision(prepared.effectiveBaseRevision());
+            operation.setSessionId(idempotencySessionId);
+            operation.setClientSeq(normalizedClientSeq);
+            operation.setOpType(prepared.effectiveOp().getOpType());
+            operation.setOpPosition(prepared.effectiveOp().getPosition());
+            operation.setOpLength(prepared.effectiveOp().getLength() == null ? 0 : prepared.effectiveOp().getLength());
+            operation.setOpText(prepared.effectiveOp().getText());
+            operation.setEditorId(normalizedEditorId);
+            operation.setEditorName(normalizedEditorName);
+            operation.setCreatedAt(now);
+            operation.prepareForInsert();
+
+            DocumentDeltaStore.AppendResult appendResult = deltaStore.appendIfAbsent(operation);
+            if (appendResult.duplicated()) {
+                DocumentOperationEntity duplicated = appendResult.operation();
+                CollaborativeDocumentEntity saved = requireDocument(normalizedDocId);
+                cacheService.put(saved);
+                return new ApplyResult(
+                        true,
+                        toDocument(saved),
+                        toOperation(duplicated),
+                        toRevision(revision)
+                );
+            }
+            DocumentOperationEntity persistedOperation = appendResult.operation();
+
             CollaborativeDocumentEntity saved = requireDocument(normalizedDocId);
             cacheService.put(saved);
+            eventPublisher.publishAfterCommit(DocumentDomainEvent.of(
+                    resolveDomainEventType(resolvedChangeType),
+                    normalizedDocId,
+                    prepared.nextRevision(),
+                    normalizedEditorId,
+                    normalizedEditorName,
+                    buildOperationPayload(
+                            persistedOperation,
+                            prepared.effectiveBaseRevision(),
+                            normalizedClientSeq,
+                            resolvedChangeType,
+                            normalizedDeltaBatchId,
+                            normalizedClientClock,
+                            normalizedBaseVector
+                    )
+            ));
             return new ApplyResult(
-                    true,
+                    false,
                     toDocument(saved),
-                    toOperation(duplicated),
+                    toOperation(persistedOperation),
                     toRevision(revision)
             );
         }
+        throw new IllegalStateException("unexpected applyOperation loop termination");
+    }
 
-        CollaborativeDocumentEntity saved = requireDocument(normalizedDocId);
-        cacheService.put(saved);
-        eventPublisher.publishAfterCommit(DocumentDomainEvent.of(
-                resolveDomainEventType(resolvedChangeType),
-                normalizedDocId,
-                nextRevision,
-                normalizedEditorId,
+    private int updateDocumentForOperation(Long documentId,
+                                           PreparedOperation prepared,
+                                           String normalizedEditorName,
+                                           LocalDateTime now) {
+        if (actorSingleWriterEnabled) {
+            // Actor/queue serial order is the write authority; DB only gates durability with expected revision.
+            return documentMapper.actorSingleWriterUpdate(
+                    documentId,
+                    prepared.effectiveBaseRevision(),
+                    prepared.nextTitle(),
+                    prepared.nextContent(),
+                    prepared.nextRevision(),
+                    normalizedEditorName,
+                    now
+            );
+        }
+        // Legacy compatibility path: optimistic lock still available behind the feature toggle.
+        return documentMapper.conditionalUpdate(
+                documentId,
+                prepared.current().getVersion(),
+                prepared.effectiveBaseRevision(),
+                prepared.nextTitle(),
+                prepared.nextContent(),
+                prepared.nextRevision(),
                 normalizedEditorName,
-                buildOperationPayload(operation, effectiveBaseRevision, normalizedClientSeq, resolvedChangeType)
-        ));
-        return new ApplyResult(
-                false,
-                toDocument(saved),
-                toOperation(operation),
-                toRevision(revision)
+                now
         );
     }
 
@@ -299,6 +407,37 @@ public class DocumentOperationService {
                                                  String content,
                                                  String changeSummary,
                                                  DocumentChangeType changeType) {
+        return applyFullReplaceOperation(
+                documentId,
+                baseRevision,
+                logicalSessionId,
+                clientSeq,
+                editorId,
+                editorName,
+                title,
+                content,
+                changeSummary,
+                changeType,
+                null,
+                null,
+                null
+        );
+    }
+
+    @Transactional
+    public ApplyResult applyFullReplaceOperation(Long documentId,
+                                                 Integer baseRevision,
+                                                 String logicalSessionId,
+                                                 Long clientSeq,
+                                                 String editorId,
+                                                 String editorName,
+                                                 String title,
+                                                 String content,
+                                                 String changeSummary,
+                                                 DocumentChangeType changeType,
+                                                 String deltaBatchId,
+                                                 Long clientClock,
+                                                 Map<String, Long> baseVector) {
         DocumentWsOperation replaceAll = buildFullReplaceOperation(documentId, baseRevision, content);
         return applyOperation(
                 documentId,
@@ -310,7 +449,10 @@ public class DocumentOperationService {
                 replaceAll,
                 title,
                 changeSummary,
-                changeType
+                changeType,
+                deltaBatchId,
+                clientClock,
+                baseVector
         );
     }
 
@@ -322,30 +464,60 @@ public class DocumentOperationService {
         int normalizedFromRevision = normalizeFromRevision(fromRevisionExclusive);
         int normalizedLimit = normalizeReplayLimit(limit);
         requireDocument(normalizedDocId);
-        return operationMapper.selectByRevisionRange(normalizedDocId, normalizedFromRevision, normalizedLimit)
+        return deltaStore.listByRevisionRange(normalizedDocId, normalizedFromRevision, normalizedLimit)
                 .stream()
                 .map(this::toOperation)
                 .toList();
     }
 
-    private String applyTextOperation(String content, DocumentWsOperation op) {
-        int textLength = content.length();
-        int position = op.getPosition();
-        int length = op.getLength() == null ? 0 : op.getLength();
-        String text = op.getText() == null ? "" : op.getText();
-
-        if (position < 0 || position > textLength) {
-            throw new BusinessException("DOCUMENT_INVALID_OPERATION", "operation position out of range");
+    private PreparedOperation prepareOperationAttempt(Long documentId,
+                                                      Integer baseRevision,
+                                                      String editorId,
+                                                      Long clientSeq,
+                                                      DocumentWsOperation operation,
+                                                      String requestedTitle) {
+        CollaborativeDocumentEntity current = requireDocument(documentId);
+        Integer currentRevision = current.getLatestRevision();
+        if (baseRevision > currentRevision) {
+            throw concurrentModification(documentId, baseRevision, currentRevision);
         }
-        if (length < 0 || position + length > textLength) {
-            throw new BusinessException("DOCUMENT_INVALID_OPERATION", "operation length out of range");
+
+        DocumentWsOperation effectiveOp = copyOperation(operation);
+        int effectiveBaseRevision = baseRevision;
+        if (!Objects.equals(currentRevision, baseRevision)) {
+            int lag = currentRevision - baseRevision;
+            if (lag > MAX_REBASE_OPS) {
+                throw concurrentModification(documentId, baseRevision, currentRevision);
+            }
+            List<DocumentOperationEntity> appliedOps = deltaStore.listByRevisionRange(
+                    documentId,
+                    baseRevision,
+                    lag
+            );
+            if (appliedOps.size() < lag) {
+                throw concurrentModification(documentId, baseRevision, currentRevision);
+            }
+            effectiveOp = mergeEngine.rebase(
+                    effectiveOp,
+                    appliedOps,
+                    editorId,
+                    clientSeq
+            );
+            effectiveBaseRevision = currentRevision;
         }
 
-        return switch (op.getOpType()) {
-            case INSERT -> content.substring(0, position) + text + content.substring(position);
-            case DELETE -> content.substring(0, position) + content.substring(position + length);
-            case REPLACE -> content.substring(0, position) + text + content.substring(position + length);
-        };
+        String currentContent = current.getContent() == null ? "" : current.getContent();
+        String nextTitle = resolveNextTitle(current.getTitle(), requestedTitle);
+        String nextContent = mergeEngine.apply(currentContent, effectiveOp);
+        int nextRevision = effectiveBaseRevision + 1;
+        return new PreparedOperation(
+                current,
+                effectiveOp,
+                effectiveBaseRevision,
+                nextTitle,
+                nextContent,
+                nextRevision
+        );
     }
 
     private void migrateOpenCommentAnchors(Long documentId, DocumentWsOperation op) {
@@ -370,128 +542,6 @@ public class DocumentOperationService {
                     insertedLength
             );
         }
-    }
-
-    private DocumentWsOperation rebaseOperation(DocumentWsOperation incoming,
-                                                List<DocumentOperationEntity> appliedOps,
-                                                String incomingEditorId,
-                                                Long incomingClientSeq) {
-        DocumentWsOperation rebased = copyOperation(incoming);
-        for (DocumentOperationEntity applied : appliedOps) {
-            int appliedPos = safeNonNegative(applied.getOpPosition());
-            int appliedLen = safeNonNegative(applied.getOpLength());
-            int appliedInsertLen = safeTextLength(applied.getOpText());
-            switch (applied.getOpType()) {
-                case INSERT -> transformAgainstInsert(
-                        rebased,
-                        appliedPos,
-                        appliedInsertLen,
-                        applied.getEditorId(),
-                        applied.getClientSeq(),
-                        incomingEditorId,
-                        incomingClientSeq
-                );
-                case DELETE -> transformAgainstDelete(rebased, appliedPos, appliedLen);
-                case REPLACE -> {
-                    transformAgainstDelete(rebased, appliedPos, appliedLen);
-                    transformAgainstInsert(
-                            rebased,
-                            appliedPos,
-                            appliedInsertLen,
-                            applied.getEditorId(),
-                            applied.getClientSeq(),
-                            incomingEditorId,
-                            incomingClientSeq
-                    );
-                }
-            }
-        }
-        return rebased;
-    }
-
-    private void transformAgainstInsert(DocumentWsOperation incoming,
-                                        int appliedPos,
-                                        int insertedLen,
-                                        String appliedEditorId,
-                                        Long appliedClientSeq,
-                                        String incomingEditorId,
-                                        Long incomingClientSeq) {
-        if (insertedLen <= 0) {
-            return;
-        }
-        int start = safeNonNegative(incoming.getPosition());
-        int length = safeNonNegative(incoming.getLength());
-        int end = start + length;
-
-        switch (incoming.getOpType()) {
-            case INSERT -> {
-                boolean shouldShift = appliedPos < start
-                        || (appliedPos == start
-                        && shouldShiftOnEqualPosition(appliedEditorId, appliedClientSeq, incomingEditorId, incomingClientSeq));
-                if (shouldShift) {
-                    incoming.setPosition(start + insertedLen);
-                }
-            }
-            case DELETE, REPLACE -> {
-                if (appliedPos <= start) {
-                    start += insertedLen;
-                } else if (appliedPos < end) {
-                    length += insertedLen;
-                }
-                incoming.setPosition(start);
-                incoming.setLength(length);
-            }
-        }
-    }
-
-    private void transformAgainstDelete(DocumentWsOperation incoming,
-                                        int appliedPos,
-                                        int deletedLen) {
-        if (deletedLen <= 0) {
-            return;
-        }
-        int deleteStart = appliedPos;
-        int deleteEnd = appliedPos + deletedLen;
-        int start = safeNonNegative(incoming.getPosition());
-        int length = safeNonNegative(incoming.getLength());
-        int end = start + length;
-
-        switch (incoming.getOpType()) {
-            case INSERT -> incoming.setPosition(transformPointByDelete(start, deleteStart, deleteEnd));
-            case DELETE, REPLACE -> {
-                int newStart = transformPointByDelete(start, deleteStart, deleteEnd);
-                int newEnd = transformPointByDelete(end, deleteStart, deleteEnd);
-                if (newEnd < newStart) {
-                    newEnd = newStart;
-                }
-                incoming.setPosition(newStart);
-                incoming.setLength(newEnd - newStart);
-            }
-        }
-    }
-
-    private int transformPointByDelete(int point, int deleteStart, int deleteEnd) {
-        if (point >= deleteEnd) {
-            return point - (deleteEnd - deleteStart);
-        }
-        if (point <= deleteStart) {
-            return point;
-        }
-        return deleteStart;
-    }
-
-    private boolean shouldShiftOnEqualPosition(String appliedEditorId,
-                                               Long appliedClientSeq,
-                                               String incomingEditorId,
-                                               Long incomingClientSeq) {
-        int editorCmp = safeString(appliedEditorId).compareTo(safeString(incomingEditorId));
-        if (editorCmp < 0) {
-            return true;
-        }
-        if (editorCmp > 0) {
-            return false;
-        }
-        return safeLong(appliedClientSeq) < safeLong(incomingClientSeq);
     }
 
     private DocumentWsOperation copyOperation(DocumentWsOperation source) {
@@ -627,6 +677,60 @@ public class DocumentOperationService {
         return sessionId.trim();
     }
 
+    private String normalizeOptionalDeltaBatchId(String deltaBatchId) {
+        if (deltaBatchId == null) {
+            return null;
+        }
+        String normalized = deltaBatchId.trim();
+        if (normalized.isEmpty()) {
+            throw new BusinessException("INVALID_ARGUMENT", "deltaBatchId must not be blank");
+        }
+        if (normalized.length() > MAX_DELTA_BATCH_ID_LENGTH) {
+            throw new BusinessException("INVALID_ARGUMENT", "deltaBatchId is too long");
+        }
+        return normalized;
+    }
+
+    private Long normalizeOptionalClientClock(Long clientClock) {
+        if (clientClock == null) {
+            return null;
+        }
+        if (clientClock <= 0) {
+            throw new BusinessException("INVALID_ARGUMENT", "clientClock must be > 0");
+        }
+        return clientClock;
+    }
+
+    private Map<String, Long> normalizeOptionalBaseVector(Map<String, Long> baseVector) {
+        if (baseVector == null || baseVector.isEmpty()) {
+            return baseVector;
+        }
+        if (baseVector.size() > MAX_BASE_VECTOR_ENTRIES) {
+            throw new BusinessException("INVALID_ARGUMENT", "baseVector size exceeds limit");
+        }
+        for (Map.Entry<String, Long> entry : baseVector.entrySet()) {
+            String actorId = entry.getKey();
+            Long clock = entry.getValue();
+            if (actorId == null || actorId.isBlank()) {
+                throw new BusinessException("INVALID_ARGUMENT", "baseVector actor id must not be blank");
+            }
+            if (actorId.length() > MAX_BASE_VECTOR_ACTOR_ID_LENGTH) {
+                throw new BusinessException("INVALID_ARGUMENT", "baseVector actor id is too long");
+            }
+            if (clock == null || clock < 0) {
+                throw new BusinessException("INVALID_ARGUMENT", "baseVector clock must be >= 0");
+            }
+        }
+        return baseVector;
+    }
+
+    private String resolveIdempotencySessionId(String logicalSessionId, String deltaBatchId) {
+        if (deltaBatchId != null) {
+            return DELTA_BATCH_SESSION_PREFIX + deltaBatchId;
+        }
+        return logicalSessionId;
+    }
+
     private Long normalizeClientSeq(Long clientSeq) {
         if (clientSeq == null || clientSeq <= 0) {
             throw new BusinessException("INVALID_ARGUMENT", "clientSeq must be > 0");
@@ -697,7 +801,7 @@ public class DocumentOperationService {
                         "DOCUMENT_SNAPSHOT_NOT_FOUND",
                         "snapshot not found, documentId=" + documentId + ", revisionNo=" + targetRevisionNo
                 ));
-        String rebuilt = snapshot.getContent() == null ? "" : snapshot.getContent();
+        String rebuilt = loadSnapshotContent(documentId, snapshot);
         int replayCount = targetRevisionNo - snapshot.getRevisionNo();
         if (replayCount <= 0) {
             return rebuilt;
@@ -725,15 +829,77 @@ public class DocumentOperationService {
             );
         }
         for (DocumentRevisionEntity replayRevision : revisionsToReplay) {
-            DocumentOperationEntity operation = operationMapper.selectByRevision(documentId, replayRevision.getRevisionNo())
+            DocumentOperationEntity operation = deltaStore.findByRevision(documentId, replayRevision.getRevisionNo())
                     .orElseThrow(() -> new BusinessException(
                             "DOCUMENT_OPERATION_NOT_FOUND",
                             "replay operation missing, documentId=" + documentId
                                     + ", revisionNo=" + replayRevision.getRevisionNo()
                     ));
-            rebuilt = applyTextOperation(rebuilt, toWsOperation(operation));
+            rebuilt = mergeEngine.apply(rebuilt, toWsOperation(operation));
         }
         return rebuilt;
+    }
+
+    private String buildSnapshotRef(Long documentId, Integer revisionNo) {
+        if (documentId == null || revisionNo == null) {
+            throw new BusinessException("INVALID_ARGUMENT", "snapshot reference requires documentId and revisionNo");
+        }
+        return "snapshot/" + documentId + "/" + revisionNo + ".bin";
+    }
+
+    private void persistLatestSnapshot(Long documentId,
+                                       Integer revisionNo,
+                                       String snapshotRef,
+                                       String content,
+                                       String updatedBy) {
+        snapshotStore.put(snapshotRef, CRDT_SNAPSHOT_CODEC.encodeText(content == null ? "" : content));
+        documentMapper.updateSnapshotMetadata(
+                documentId,
+                snapshotRef,
+                revisionNo,
+                updatedBy,
+                LocalDateTime.now()
+        );
+    }
+
+    private String loadSnapshotContent(Long documentId, DocumentRevisionEntity snapshotRevision) {
+        if (snapshotRevision.getContent() != null) {
+            return snapshotRevision.getContent();
+        }
+
+        String defaultSnapshotRef = buildSnapshotRef(documentId, snapshotRevision.getRevisionNo());
+        Optional<String> loaded = snapshotStore.get(defaultSnapshotRef);
+        if (loaded.isPresent()) {
+            return decodeSnapshotPayload(loaded.get());
+        }
+
+        CollaborativeDocumentEntity document = documentMapper.selectById(documentId);
+        if (document != null
+                && Objects.equals(document.getLatestSnapshotRevision(), snapshotRevision.getRevisionNo())
+                && document.getLatestSnapshotRef() != null
+                && !document.getLatestSnapshotRef().isBlank()) {
+            return snapshotStore.get(document.getLatestSnapshotRef())
+                    .map(this::decodeSnapshotPayload)
+                    .orElseThrow(() -> new BusinessException(
+                            "DOCUMENT_SNAPSHOT_NOT_FOUND",
+                            "snapshot object missing, documentId=" + documentId + ", revisionNo=" + snapshotRevision.getRevisionNo()
+                    ));
+        }
+
+        throw new BusinessException(
+                "DOCUMENT_SNAPSHOT_NOT_FOUND",
+                "snapshot object missing, documentId=" + documentId + ", revisionNo=" + snapshotRevision.getRevisionNo()
+        );
+    }
+
+    private String decodeSnapshotPayload(String payload) {
+        if (payload == null) {
+            return "";
+        }
+        if (!CRDT_SNAPSHOT_CODEC.isEncodedPayload(payload)) {
+            return payload;
+        }
+        return CRDT_SNAPSHOT_CODEC.decodeToText(payload);
     }
 
     private DocumentWsOperation toWsOperation(DocumentOperationEntity operation) {
@@ -756,11 +922,17 @@ public class DocumentOperationService {
     private Map<String, Object> buildOperationPayload(DocumentOperationEntity operation,
                                                       Integer baseRevision,
                                                       Long clientSeq,
-                                                      DocumentChangeType changeType) {
+                                                      DocumentChangeType changeType,
+                                                      String deltaBatchId,
+                                                      Long clientClock,
+                                                      Map<String, Long> baseVector) {
         java.util.LinkedHashMap<String, Object> payload = new java.util.LinkedHashMap<>();
         payload.put("operationId", operation.getId());
         payload.put("baseRevision", baseRevision);
         payload.put("clientSeq", clientSeq);
+        payload.put("deltaBatchId", deltaBatchId);
+        payload.put("clientClock", clientClock);
+        payload.put("baseVector", baseVector);
         payload.put("changeType", changeType == null ? null : changeType.name());
         payload.put("opType", operation.getOpType() == null ? null : operation.getOpType().name());
         payload.put("opPosition", operation.getOpPosition());
@@ -824,6 +996,16 @@ public class DocumentOperationService {
                         + ", baseRevision=" + baseRevision
                         + ", latestRevision=" + latestRevision
         );
+    }
+
+    private record PreparedOperation(
+            CollaborativeDocumentEntity current,
+            DocumentWsOperation effectiveOp,
+            int effectiveBaseRevision,
+            String nextTitle,
+            String nextContent,
+            int nextRevision
+    ) {
     }
 
     public record ApplyResult(

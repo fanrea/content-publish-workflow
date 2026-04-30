@@ -5,6 +5,10 @@ import com.contentworkflow.document.application.DocumentPermissionService;
 import com.contentworkflow.document.application.cache.DocumentCacheService;
 import com.contentworkflow.document.application.event.DocumentEventPublisher;
 import com.contentworkflow.document.application.realtime.DocumentOperationService;
+import com.contentworkflow.document.application.realtime.MergeEngine;
+import com.contentworkflow.document.application.realtime.OtMergeEngine;
+import com.contentworkflow.document.application.storage.DocumentDeltaStore;
+import com.contentworkflow.document.application.storage.DocumentSnapshotStore;
 import com.contentworkflow.document.domain.entity.DocumentOperation;
 import com.contentworkflow.document.domain.enums.DocumentMemberRole;
 import com.contentworkflow.document.domain.enums.DocumentOpType;
@@ -14,7 +18,6 @@ import com.contentworkflow.document.infrastructure.persistence.entity.DocumentOp
 import com.contentworkflow.document.infrastructure.persistence.entity.DocumentRevisionEntity;
 import com.contentworkflow.document.infrastructure.persistence.mybatis.CollaborativeDocumentMybatisMapper;
 import com.contentworkflow.document.infrastructure.persistence.mybatis.DocumentCommentMybatisMapper;
-import com.contentworkflow.document.infrastructure.persistence.mybatis.DocumentOperationMybatisMapper;
 import com.contentworkflow.document.infrastructure.persistence.mybatis.DocumentRevisionMybatisMapper;
 import com.contentworkflow.document.interfaces.ws.DocumentWsOperation;
 import org.junit.jupiter.api.Test;
@@ -146,11 +149,13 @@ class DocumentOperationConcurrencyIntegrationTest {
         private InMemoryRealtimeHarness() {
             CollaborativeDocumentMybatisMapper documentMapper = Mockito.mock(CollaborativeDocumentMybatisMapper.class);
             DocumentRevisionMybatisMapper revisionMapper = Mockito.mock(DocumentRevisionMybatisMapper.class);
-            DocumentOperationMybatisMapper operationMapper = Mockito.mock(DocumentOperationMybatisMapper.class);
+            DocumentDeltaStore deltaStore = Mockito.mock(DocumentDeltaStore.class);
+            DocumentSnapshotStore snapshotStore = Mockito.mock(DocumentSnapshotStore.class);
             DocumentCommentMybatisMapper commentMapper = Mockito.mock(DocumentCommentMybatisMapper.class);
             DocumentPermissionService permissionService = Mockito.mock(DocumentPermissionService.class);
             DocumentCacheService cacheService = Mockito.mock(DocumentCacheService.class);
             DocumentEventPublisher eventPublisher = Mockito.mock(DocumentEventPublisher.class);
+            MergeEngine mergeEngine = new OtMergeEngine();
 
             when(permissionService.requireCanEdit(eq(1L), anyString())).thenReturn(DocumentMemberRole.EDITOR);
             when(documentMapper.selectById(eq(1L))).thenAnswer(invocation -> state.snapshotDocument());
@@ -171,20 +176,18 @@ class DocumentOperationConcurrencyIntegrationTest {
                     invocation.getArgument(5, Integer.class),
                     invocation.getArgument(6, String.class)
             ));
-            when(operationMapper.selectBySessionSeq(eq(1L), anyString(), anyLong())).thenAnswer(invocation ->
+            when(deltaStore.findBySessionSeq(eq(1L), anyString(), anyLong())).thenAnswer(invocation ->
                     state.selectBySessionSeq(
                             invocation.getArgument(1, String.class),
                             invocation.getArgument(2, Long.class)
                     ));
-            when(operationMapper.selectByRevisionRange(eq(1L), anyInt(), anyInt())).thenAnswer(invocation ->
+            when(deltaStore.listByRevisionRange(eq(1L), anyInt(), anyInt())).thenAnswer(invocation ->
                     state.selectByRevisionRange(
                             invocation.getArgument(1, Integer.class),
                             invocation.getArgument(2, Integer.class)
                     ));
-            when(operationMapper.insert(any(DocumentOperationEntity.class))).thenAnswer(invocation -> {
-                state.insertOperation(invocation.getArgument(0, DocumentOperationEntity.class));
-                return 1;
-            });
+            when(deltaStore.appendIfAbsent(any(DocumentOperationEntity.class))).thenAnswer(invocation ->
+                    state.appendIfAbsent(invocation.getArgument(0, DocumentOperationEntity.class)));
             when(revisionMapper.insert(any(DocumentRevisionEntity.class))).thenAnswer(invocation -> {
                 state.insertRevision(invocation.getArgument(0, DocumentRevisionEntity.class));
                 return 1;
@@ -194,11 +197,14 @@ class DocumentOperationConcurrencyIntegrationTest {
             service = new DocumentOperationService(
                     documentMapper,
                     revisionMapper,
-                    operationMapper,
+                    deltaStore,
+                    snapshotStore,
                     commentMapper,
                     permissionService,
                     cacheService,
-                    eventPublisher
+                    eventPublisher,
+                    mergeEngine,
+                    false
             );
         }
     }
@@ -273,9 +279,15 @@ class DocumentOperationConcurrencyIntegrationTest {
                     .toList();
         }
 
-        private synchronized void insertOperation(DocumentOperationEntity operation) {
+        private synchronized DocumentDeltaStore.AppendResult appendIfAbsent(DocumentOperationEntity operation) {
+            Optional<DocumentOperationEntity> duplicated = selectBySessionSeq(operation.getSessionId(), operation.getClientSeq());
+            if (duplicated.isPresent()) {
+                return new DocumentDeltaStore.AppendResult(true, duplicated.get());
+            }
             operation.setId(operationIdSeq++);
-            operations.add(copyOperation(operation));
+            DocumentOperationEntity inserted = copyOperation(operation);
+            operations.add(inserted);
+            return new DocumentDeltaStore.AppendResult(false, copyOperation(inserted));
         }
 
         private synchronized void insertRevision(DocumentRevisionEntity revision) {
