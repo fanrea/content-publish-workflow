@@ -23,6 +23,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.ArgumentCaptor;
 
+import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -81,6 +82,16 @@ class DocumentOperationServiceTest {
                 mergeEngine,
                 actorSingleWriterEnabled
         );
+    }
+
+    private void setOperationLogFirstEnabled(DocumentOperationService target, boolean enabled) {
+        try {
+            Field field = DocumentOperationService.class.getDeclaredField("operationLogFirstEnabled");
+            field.setAccessible(true);
+            field.setBoolean(target, enabled);
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     @Test
@@ -261,6 +272,111 @@ class DocumentOperationServiceTest {
                 any()
         );
         verify(deltaStore, times(1)).appendIfAbsent(any(DocumentOperationEntity.class));
+    }
+
+    @Test
+    void applyOperation_shouldUseLegacyContentUpdateWhenOperationLogFirstDisabled() {
+        CollaborativeDocumentEntity current = buildDocument(1L, 999L, "doc", "abc", 2);
+        CollaborativeDocumentEntity saved = buildDocument(1L, 1000L, "doc", "abXc", 3);
+
+        when(permissionService.requireCanEdit(1L, "u1")).thenReturn(DocumentMemberRole.EDITOR);
+        when(deltaStore.findBySessionSeq(1L, "sess-default", 61L)).thenReturn(Optional.empty());
+        when(documentMapper.selectById(1L)).thenReturn(current, saved);
+        when(documentMapper.actorSingleWriterUpdate(eq(1L), eq(2), eq("doc"), eq("abXc"), eq(3), eq("Alice"), any()))
+                .thenReturn(1);
+        when(revisionMapper.insert(any(DocumentRevisionEntity.class))).thenReturn(1);
+        when(deltaStore.appendIfAbsent(any(DocumentOperationEntity.class))).thenAnswer(invocation -> {
+            DocumentOperationEntity inserted = invocation.getArgument(0, DocumentOperationEntity.class);
+            inserted.setId(2061L);
+            return new DocumentDeltaStore.AppendResult(false, inserted);
+        });
+
+        service.applyOperation(1L, 2, "sess-default", 61L, "u1", "Alice", buildInsert(2, "X"));
+
+        verify(documentMapper).actorSingleWriterUpdate(eq(1L), eq(2), eq("doc"), eq("abXc"), eq(3), eq("Alice"), any());
+        verify(documentMapper, never()).actorSingleWriterUpdateMetadataOnly(any(), any(), any(), any(), any(), any());
+        verify(deltaStore).appendIfAbsent(any(DocumentOperationEntity.class));
+    }
+
+    @Test
+    void applyOperation_shouldUseMetadataOnlyUpdateWhenOperationLogFirstEnabled() {
+        setOperationLogFirstEnabled(service, true);
+
+        CollaborativeDocumentEntity current = buildDocument(1L, 777L, "doc", "abc", 2);
+        CollaborativeDocumentEntity saved = buildDocument(1L, 778L, "doc", "abc", 3);
+
+        when(permissionService.requireCanEdit(1L, "u1")).thenReturn(DocumentMemberRole.EDITOR);
+        when(deltaStore.findBySessionSeq(1L, "sess-meta", 62L)).thenReturn(Optional.empty());
+        when(documentMapper.selectById(1L)).thenReturn(current, saved);
+        when(documentMapper.actorSingleWriterUpdateMetadataOnly(eq(1L), eq(2), eq("doc"), eq(3), eq("Alice"), any()))
+                .thenReturn(1);
+        when(revisionMapper.insert(any(DocumentRevisionEntity.class))).thenReturn(1);
+        when(deltaStore.appendIfAbsent(any(DocumentOperationEntity.class))).thenAnswer(invocation -> {
+            DocumentOperationEntity inserted = invocation.getArgument(0, DocumentOperationEntity.class);
+            inserted.setId(2062L);
+            return new DocumentDeltaStore.AppendResult(false, inserted);
+        });
+
+        service.applyOperation(1L, 2, "sess-meta", 62L, "u1", "Alice", buildInsert(2, "X"));
+
+        verify(documentMapper).actorSingleWriterUpdateMetadataOnly(eq(1L), eq(2), eq("doc"), eq(3), eq("Alice"), any());
+        verify(documentMapper, never()).actorSingleWriterUpdate(any(), any(), any(), any(), any(), any(), any());
+        verify(deltaStore).appendIfAbsent(any(DocumentOperationEntity.class));
+    }
+
+    @Test
+    void applyOperation_shouldUseRuntimeContentForConsecutiveOperationLogFirstWrites() {
+        setOperationLogFirstEnabled(service, true);
+
+        CollaborativeDocumentEntity firstCurrent = buildDocument(1L, 777L, "doc", "abc", 2);
+        CollaborativeDocumentEntity firstSavedWithStaleContent = buildDocument(1L, 778L, "doc", "abc", 3);
+        CollaborativeDocumentEntity secondCurrentWithStaleContent = buildDocument(1L, 778L, "doc", "abc", 3);
+        CollaborativeDocumentEntity secondSavedWithStaleContent = buildDocument(1L, 779L, "doc", "abc", 4);
+
+        when(permissionService.requireCanEdit(1L, "u1")).thenReturn(DocumentMemberRole.EDITOR);
+        when(deltaStore.findBySessionSeq(1L, "sess-meta-1", 71L)).thenReturn(Optional.empty());
+        when(deltaStore.findBySessionSeq(1L, "sess-meta-2", 72L)).thenReturn(Optional.empty());
+        when(documentMapper.selectById(1L)).thenReturn(
+                firstCurrent,
+                firstSavedWithStaleContent,
+                secondCurrentWithStaleContent,
+                secondSavedWithStaleContent
+        );
+        when(documentMapper.actorSingleWriterUpdateMetadataOnly(eq(1L), eq(2), eq("doc"), eq(3), eq("Alice"), any()))
+                .thenReturn(1);
+        when(documentMapper.actorSingleWriterUpdateMetadataOnly(eq(1L), eq(3), eq("doc"), eq(4), eq("Alice"), any()))
+                .thenReturn(1);
+        when(revisionMapper.insert(any(DocumentRevisionEntity.class))).thenReturn(1);
+        when(deltaStore.appendIfAbsent(any(DocumentOperationEntity.class))).thenAnswer(invocation -> {
+            DocumentOperationEntity inserted = invocation.getArgument(0, DocumentOperationEntity.class);
+            inserted.setId(3000L + inserted.getRevisionNo());
+            return new DocumentDeltaStore.AppendResult(false, inserted);
+        });
+
+        DocumentOperationService.ApplyResult first = service.applyOperation(
+                1L,
+                2,
+                "sess-meta-1",
+                71L,
+                "u1",
+                "Alice",
+                buildInsert(2, "X")
+        );
+        DocumentOperationService.ApplyResult second = service.applyOperation(
+                1L,
+                3,
+                "sess-meta-2",
+                72L,
+                "u1",
+                "Alice",
+                buildInsert(4, "Y")
+        );
+
+        assertThat(first.document().getContent()).isEqualTo("abXc");
+        assertThat(second.document().getContent()).isEqualTo("abXcY");
+        verify(documentMapper, times(2)).actorSingleWriterUpdateMetadataOnly(any(), any(), any(), any(), any(), any());
+        verify(documentMapper, never()).actorSingleWriterUpdate(any(), any(), any(), any(), any(), any(), any());
+        verify(deltaStore, times(2)).appendIfAbsent(any(DocumentOperationEntity.class));
     }
 
     @Test

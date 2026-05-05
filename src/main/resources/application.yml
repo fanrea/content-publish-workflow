@@ -71,6 +71,10 @@ workflow:
       # true -> actor/queue order is write authority; DB update only checks expected revision.
       # false is treated as misconfiguration and startup fails.
       enabled: ${DOC_REALTIME_ACTOR_SINGLE_WRITER_ENABLED:true}
+    operation-log-first:
+      # When enabled, incremental realtime apply updates document metadata only;
+      # content body stays out of main table writes while delta/snapshot paths remain active.
+      enabled: ${DOC_REALTIME_OPERATION_LOG_FIRST_ENABLED:false}
     gateway:
       # Strict stateless mode: gateway no longer blocks on synchronous JOIN/SYNC DB reads.
       strict-stateless: ${DOC_REALTIME_GATEWAY_STRICT_STATELESS:true}

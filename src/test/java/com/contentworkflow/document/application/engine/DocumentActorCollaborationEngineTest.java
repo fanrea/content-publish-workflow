@@ -271,6 +271,122 @@ class DocumentActorCollaborationEngineTest {
     }
 
     @Test
+    void submit_shouldRejectWhenSameDocumentBacklogExceedsLimit() throws Exception {
+        DocumentOperationService operationService = mock(DocumentOperationService.class);
+        DocumentRealtimePushService pushService = mock(DocumentRealtimePushService.class);
+        DocumentActorCollaborationEngine engine = new DocumentActorCollaborationEngine(operationService, pushService, 1, 2);
+
+        CountDownLatch firstApplyEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirstApply = new CountDownLatch(1);
+        CountDownLatch allDone = new CountDownLatch(2);
+
+        doAnswer(invocation -> {
+            Long clientSeq = invocation.getArgument(3);
+            if (clientSeq == 1L) {
+                firstApplyEntered.countDown();
+                releaseFirstApply.await(2, TimeUnit.SECONDS);
+            }
+            try {
+                Long docId = invocation.getArgument(0);
+                return applyResult(docId, clientSeq, false);
+            } finally {
+                allDone.countDown();
+            }
+        }).when(operationService).applyOperation(
+                anyLong(),
+                anyInt(),
+                anyString(),
+                anyLong(),
+                anyString(),
+                anyString(),
+                any(DocumentWsOperation.class),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any()
+        );
+
+        try {
+            engine.submit(command(100L, 1L));
+            assertThat(firstApplyEntered.await(1, TimeUnit.SECONDS)).isTrue();
+            engine.submit(command(100L, 2L));
+
+            assertThatThrownBy(() -> engine.submit(command(100L, 3L)))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("document backlog limit exceeded");
+
+            releaseFirstApply.countDown();
+            assertThat(allDone.await(2, TimeUnit.SECONDS)).isTrue();
+            verify(operationService, times(2)).applyOperation(
+                    anyLong(),
+                    anyInt(),
+                    anyString(),
+                    anyLong(),
+                    anyString(),
+                    anyString(),
+                    any(DocumentWsOperation.class),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any()
+            );
+            assertThat(engine.currentBacklog(100L)).isZero();
+            assertThat(engine.backlogSnapshot()).isEmpty();
+        } finally {
+            releaseFirstApply.countDown();
+            engine.destroy();
+        }
+    }
+
+    @Test
+    void submit_shouldEventuallyClearBacklogAfterNormalProcessing() throws Exception {
+        DocumentOperationService operationService = mock(DocumentOperationService.class);
+        DocumentRealtimePushService pushService = mock(DocumentRealtimePushService.class);
+        DocumentActorCollaborationEngine engine = new DocumentActorCollaborationEngine(operationService, pushService, 2, 8);
+
+        CountDownLatch done = new CountDownLatch(3);
+        doAnswer(invocation -> {
+            try {
+                Long docId = invocation.getArgument(0);
+                Long clientSeq = invocation.getArgument(3);
+                return applyResult(docId, clientSeq, false);
+            } finally {
+                done.countDown();
+            }
+        }).when(operationService).applyOperation(
+                anyLong(),
+                anyInt(),
+                anyString(),
+                anyLong(),
+                anyString(),
+                anyString(),
+                any(DocumentWsOperation.class),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any()
+        );
+
+        try {
+            engine.submit(command(100L, 1L));
+            engine.submit(command(100L, 2L));
+            engine.submit(command(200L, 3L));
+            assertThat(done.await(2, TimeUnit.SECONDS)).isTrue();
+            awaitBacklogToZero(engine, 100L, 1000);
+            awaitBacklogToZero(engine, 200L, 1000);
+            assertThat(engine.backlogSnapshot()).isEmpty();
+        } finally {
+            engine.destroy();
+        }
+    }
+
+    @Test
     void submit_shouldNotBlockApplyWhenPushIsSlowOrFailing() throws Exception {
         DocumentOperationService operationService = mock(DocumentOperationService.class);
         DocumentRealtimePushService pushService = mock(DocumentRealtimePushService.class);
@@ -375,5 +491,13 @@ class DocumentActorCollaborationEngineTest {
                 .createdAt(LocalDateTime.now())
                 .build();
         return new DocumentOperationService.ApplyResult(duplicated, document, operation, null);
+    }
+
+    private void awaitBacklogToZero(DocumentActorCollaborationEngine engine, Long docId, long timeoutMillis) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMillis;
+        while (engine.currentBacklog(docId) != 0 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(engine.currentBacklog(docId)).isZero();
     }
 }

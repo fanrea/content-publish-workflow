@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class DocumentOperationService {
@@ -53,6 +54,9 @@ public class DocumentOperationService {
     private final DocumentCacheService cacheService;
     private final DocumentEventPublisher eventPublisher;
     private final MergeEngine mergeEngine;
+    private final Map<Long, RuntimeDocumentContent> runtimeContentByDocument = new ConcurrentHashMap<>();
+    @Value("${workflow.realtime.operation-log-first.enabled:false}")
+    private boolean operationLogFirstEnabled;
 
     public DocumentOperationService(CollaborativeDocumentMybatisMapper documentMapper,
                                     DocumentRevisionMybatisMapper revisionMapper,
@@ -175,6 +179,38 @@ public class DocumentOperationService {
                                       String deltaBatchId,
                                       Long clientClock,
                                       Map<String, Long> baseVector) {
+        return applyOperationInternal(
+                documentId,
+                baseRevision,
+                logicalSessionId,
+                clientSeq,
+                editorId,
+                editorName,
+                op,
+                requestedTitle,
+                requestedChangeSummary,
+                requestedChangeType,
+                deltaBatchId,
+                clientClock,
+                baseVector,
+                true
+        );
+    }
+
+    private ApplyResult applyOperationInternal(Long documentId,
+                                               Integer baseRevision,
+                                               String logicalSessionId,
+                                               Long clientSeq,
+                                               String editorId,
+                                               String editorName,
+                                               DocumentWsOperation op,
+                                               String requestedTitle,
+                                               String requestedChangeSummary,
+                                               DocumentChangeType requestedChangeType,
+                                               String deltaBatchId,
+                                               Long clientClock,
+                                               Map<String, Long> baseVector,
+                                               boolean metadataOnlyUpdateAllowed) {
         Long normalizedDocId = normalizeDocumentId(documentId);
         Integer normalizedBaseRevision = normalizeBaseRevision(baseRevision);
         String normalizedSessionId = normalizeLogicalSessionId(logicalSessionId);
@@ -197,11 +233,12 @@ public class DocumentOperationService {
                 idempotencySessionId,
                 normalizedClientSeq
         ).orElse(null);
-        if (processed != null) {
-            CollaborativeDocumentEntity current = requireDocument(normalizedDocId);
-            cacheService.put(current);
-            return new ApplyResult(
-                    true,
+            if (processed != null) {
+                CollaborativeDocumentEntity current = requireDocument(normalizedDocId);
+                applyRuntimeContentIfAvailable(current);
+                cacheService.put(current);
+                return new ApplyResult(
+                        true,
                     toDocument(current),
                     toOperation(processed),
                     null
@@ -218,6 +255,7 @@ public class DocumentOperationService {
                 ).orElse(null);
                 if (duplicated != null) {
                     CollaborativeDocumentEntity current = requireDocument(normalizedDocId);
+                    applyRuntimeContentIfAvailable(current);
                     cacheService.put(current);
                     return new ApplyResult(
                             true,
@@ -244,7 +282,8 @@ public class DocumentOperationService {
                     normalizedDocId,
                     prepared,
                     normalizedEditorName,
-                    now
+                    now,
+                    metadataOnlyUpdateAllowed
             );
             if (updated == 0) {
                 if (attempt < maxAttempts) {
@@ -310,6 +349,7 @@ public class DocumentOperationService {
             if (appendResult.duplicated()) {
                 DocumentOperationEntity duplicated = appendResult.operation();
                 CollaborativeDocumentEntity saved = requireDocument(normalizedDocId);
+                applyRuntimeContentIfAvailable(saved);
                 cacheService.put(saved);
                 return new ApplyResult(
                         true,
@@ -319,8 +359,10 @@ public class DocumentOperationService {
                 );
             }
             DocumentOperationEntity persistedOperation = appendResult.operation();
+            rememberRuntimeContent(normalizedDocId, prepared.nextRevision(), prepared.nextContent());
 
             CollaborativeDocumentEntity saved = requireDocument(normalizedDocId);
+            applyRuntimeContentIfAvailable(saved);
             cacheService.put(saved);
             eventPublisher.publishAfterCommit(DocumentDomainEvent.of(
                     resolveDomainEventType(resolvedChangeType),
@@ -351,7 +393,18 @@ public class DocumentOperationService {
     private int updateDocumentForOperation(Long documentId,
                                            PreparedOperation prepared,
                                            String normalizedEditorName,
-                                           LocalDateTime now) {
+                                           LocalDateTime now,
+                                           boolean metadataOnlyUpdateAllowed) {
+        if (metadataOnlyUpdateAllowed && operationLogFirstEnabled) {
+            return documentMapper.actorSingleWriterUpdateMetadataOnly(
+                    documentId,
+                    prepared.effectiveBaseRevision(),
+                    prepared.nextTitle(),
+                    prepared.nextRevision(),
+                    normalizedEditorName,
+                    now
+            );
+        }
         // Actor/queue serial order is the write authority; DB only gates durability with expected revision.
         return documentMapper.actorSingleWriterUpdate(
                 documentId,
@@ -431,7 +484,7 @@ public class DocumentOperationService {
                                                  Long clientClock,
                                                  Map<String, Long> baseVector) {
         DocumentWsOperation replaceAll = buildFullReplaceOperation(documentId, baseRevision, content);
-        return applyOperation(
+        return applyOperationInternal(
                 documentId,
                 baseRevision,
                 logicalSessionId,
@@ -444,7 +497,8 @@ public class DocumentOperationService {
                 changeType,
                 deltaBatchId,
                 clientClock,
-                baseVector
+                baseVector,
+                false
         );
     }
 
@@ -836,6 +890,10 @@ public class DocumentOperationService {
     }
 
     private String materializeCurrentDocumentContent(Long documentId, CollaborativeDocumentEntity current) {
+        String runtimeContent = runtimeContentFor(documentId, current.getLatestRevision());
+        if (runtimeContent != null) {
+            return runtimeContent;
+        }
         String fallback = decodeSnapshotPayload(current.getContent());
         Integer latestRevision = current.getLatestRevision();
         Integer snapshotRevision = current.getLatestSnapshotRevision();
@@ -880,6 +938,34 @@ public class DocumentOperationService {
             rebuilt = mergeEngine.apply(rebuilt, toWsOperation(operation.get()));
         }
         return rebuilt;
+    }
+
+    private void rememberRuntimeContent(Long documentId, Integer revision, String content) {
+        if (!operationLogFirstEnabled || documentId == null || revision == null || revision <= 0) {
+            return;
+        }
+        runtimeContentByDocument.put(documentId, new RuntimeDocumentContent(revision, content == null ? "" : content));
+    }
+
+    private String runtimeContentFor(Long documentId, Integer revision) {
+        if (!operationLogFirstEnabled || documentId == null || revision == null || revision <= 0) {
+            return null;
+        }
+        RuntimeDocumentContent runtimeContent = runtimeContentByDocument.get(documentId);
+        if (runtimeContent == null || runtimeContent.revision() != revision) {
+            return null;
+        }
+        return runtimeContent.content();
+    }
+
+    private void applyRuntimeContentIfAvailable(CollaborativeDocumentEntity entity) {
+        if (entity == null) {
+            return;
+        }
+        String runtimeContent = runtimeContentFor(entity.getId(), entity.getLatestRevision());
+        if (runtimeContent != null) {
+            entity.setContent(runtimeContent);
+        }
     }
 
     private String buildSnapshotRef(Long documentId, Integer revisionNo) {
@@ -1048,6 +1134,9 @@ public class DocumentOperationService {
             String nextContent,
             int nextRevision
     ) {
+    }
+
+    private record RuntimeDocumentContent(int revision, String content) {
     }
 
     public record ApplyResult(

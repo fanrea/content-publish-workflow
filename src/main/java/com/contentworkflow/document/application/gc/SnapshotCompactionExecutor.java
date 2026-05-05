@@ -64,16 +64,18 @@ public class SnapshotCompactionExecutor implements DocumentCompactionExecutor {
         String latestContent = baselineSnapshot.visibleText();
         String updatedBy = normalizeUpdatedBy(document.getUpdatedBy());
         String encodedPayload = CRDT_SNAPSHOT_CODEC.encodeText(latestContent);
+        String expectedSha256 = sha256Hex(encodedPayload);
 
         boolean snapshotReused = isSnapshotPayloadUpToDate(snapshotRef, encodedPayload);
         if (!snapshotReused) {
             snapshotStore.put(snapshotRef, encodedPayload);
         }
+        SnapshotVerificationResult verificationResult = verifySnapshotPayload(snapshotRef, encodedPayload, expectedSha256, snapshotReused);
         boolean metadataUpdated = updateSnapshotMetadataIfRequired(document, snapshotRef, latestRevision, updatedBy);
         if (!snapshotReused || metadataUpdated) {
             cacheService.evict(documentId);
         }
-        publishCompletedEvent(task, snapshotRef, latestRevision, updatedBy, baselineSnapshot, encodedPayload, snapshotReused, metadataUpdated);
+        publishCompletedEvent(task, snapshotRef, latestRevision, updatedBy, baselineSnapshot, encodedPayload, snapshotReused, metadataUpdated, verificationResult);
     }
 
     private void publishCompletedEvent(DocumentCompactionTask task,
@@ -83,7 +85,8 @@ public class SnapshotCompactionExecutor implements DocumentCompactionExecutor {
                                        BaselineSnapshot baselineSnapshot,
                                        String encodedPayload,
                                        boolean snapshotReused,
-                                       boolean metadataUpdated) {
+                                       boolean metadataUpdated,
+                                       SnapshotVerificationResult verificationResult) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("snapshotRef", snapshotRef);
         payload.put("trigger", task.trigger());
@@ -95,7 +98,10 @@ public class SnapshotCompactionExecutor implements DocumentCompactionExecutor {
         payload.put("metadataUpdated", metadataUpdated);
         payload.put("visibleCharCount", baselineSnapshot.visibleText().length());
         payload.put("payloadBytes", encodedPayload.getBytes(StandardCharsets.UTF_8).length);
-        payload.put("payloadSha256", sha256Hex(encodedPayload));
+        payload.put("payloadSha256", verificationResult.expectedSha256());
+        payload.put("expectedSha256", verificationResult.expectedSha256());
+        payload.put("verifiedSha256", verificationResult.verifiedSha256());
+        payload.put("verificationStatus", verificationResult.status());
         eventPublisher.publish(DocumentDomainEvent.of(
                 "DOCUMENT_COMPACTION_COMPLETED",
                 task.documentId(),
@@ -149,6 +155,29 @@ public class SnapshotCompactionExecutor implements DocumentCompactionExecutor {
         return getSnapshotSafely(snapshotRef)
                 .map(encodedPayload::equals)
                 .orElse(false);
+    }
+
+    private SnapshotVerificationResult verifySnapshotPayload(String snapshotRef,
+                                                             String expectedPayload,
+                                                             String expectedSha256,
+                                                             boolean snapshotReused) {
+        Optional<String> stored = getSnapshotSafely(snapshotRef);
+        if (stored.isEmpty()) {
+            throw new SnapshotVerificationException("snapshot verification failed: missing after write, snapshotRef=" + snapshotRef);
+        }
+        String storedPayload = stored.get();
+        String verifiedSha256 = sha256Hex(storedPayload);
+        if (!Objects.equals(expectedPayload, storedPayload)) {
+            throw new SnapshotVerificationException(
+                    "snapshot verification failed: payload mismatch, snapshotRef=" + snapshotRef
+                            + ", expectedSha256=" + expectedSha256
+                            + ", verifiedSha256=" + verifiedSha256);
+        }
+        return new SnapshotVerificationResult(
+                snapshotReused ? "reused_existing_verified" : "write_readback_verified",
+                expectedSha256,
+                verifiedSha256
+        );
     }
 
     private boolean updateSnapshotMetadataIfRequired(CollaborativeDocumentEntity document,
@@ -226,5 +255,14 @@ public class SnapshotCompactionExecutor implements DocumentCompactionExecutor {
     }
 
     private record BaselineSnapshot(String visibleText, String sourceType, String sourceSnapshotRef) {
+    }
+
+    private record SnapshotVerificationResult(String status, String expectedSha256, String verifiedSha256) {
+    }
+
+    static class SnapshotVerificationException extends RuntimeException {
+        SnapshotVerificationException(String message) {
+            super(message);
+        }
     }
 }

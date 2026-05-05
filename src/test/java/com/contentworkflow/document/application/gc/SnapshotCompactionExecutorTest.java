@@ -10,6 +10,7 @@ import com.contentworkflow.document.infrastructure.persistence.mybatis.Collabora
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 
 import java.time.Instant;
 import java.util.Optional;
@@ -22,6 +23,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -50,7 +52,9 @@ class SnapshotCompactionExecutorTest {
         document.setContent("hello");
         document.setUpdatedBy("alice");
         when(documentMapper.selectById(100L)).thenReturn(document);
-        when(snapshotStore.get("snapshot/100/12.bin")).thenReturn(Optional.empty());
+        CrdtSnapshotCodec codec = new CrdtSnapshotCodec();
+        String encoded = codec.encodeText("hello");
+        when(snapshotStore.get("snapshot/100/12.bin")).thenReturn(Optional.empty(), Optional.of(encoded));
 
         DocumentCompactionTask task = new DocumentCompactionTask(
                 100L,
@@ -61,7 +65,6 @@ class SnapshotCompactionExecutorTest {
 
         ArgumentCaptor<String> payloadCaptor = ArgumentCaptor.forClass(String.class);
         verify(snapshotStore, times(1)).put(eq("snapshot/100/12.bin"), payloadCaptor.capture());
-        CrdtSnapshotCodec codec = new CrdtSnapshotCodec();
         assertThat(codec.isEncodedPayload(payloadCaptor.getValue())).isTrue();
         assertThat(codec.decodeToText(payloadCaptor.getValue())).isEqualTo("hello");
         verify(documentMapper, times(1)).updateSnapshotMetadata(
@@ -82,6 +85,8 @@ class SnapshotCompactionExecutorTest {
         assertThat(eventCaptor.getValue().payload().get("sourceType")).isEqualTo("document_content");
         assertThat(eventCaptor.getValue().payload().get("snapshotReused")).isEqualTo(false);
         assertThat(eventCaptor.getValue().payload().get("metadataUpdated")).isEqualTo(true);
+        assertThat(eventCaptor.getValue().payload().get("verificationStatus")).isEqualTo("write_readback_verified");
+        assertThat(eventCaptor.getValue().payload().get("expectedSha256")).isEqualTo(eventCaptor.getValue().payload().get("verifiedSha256"));
         assertThat(eventCaptor.getValue().payload().get("payloadSha256")).isNotNull();
     }
 
@@ -122,7 +127,8 @@ class SnapshotCompactionExecutorTest {
         document.setLatestRevision(12);
         document.setContent("hello");
         when(documentMapper.selectById(100L)).thenReturn(document);
-        when(snapshotStore.get("snapshot/100/12.bin")).thenReturn(Optional.empty());
+        CrdtSnapshotCodec codec = new CrdtSnapshotCodec();
+        when(snapshotStore.get("snapshot/100/12.bin")).thenReturn(Optional.empty(), Optional.of(codec.encodeText("hello")));
         doThrow(new RuntimeException("disk unavailable"))
                 .when(snapshotStore)
                 .put(eq("snapshot/100/12.bin"), any());
@@ -148,7 +154,8 @@ class SnapshotCompactionExecutorTest {
         document.setContent("hello");
         document.setUpdatedBy("alice");
         when(documentMapper.selectById(100L)).thenReturn(document);
-        when(snapshotStore.get("snapshot/100/12.bin")).thenReturn(Optional.empty());
+        CrdtSnapshotCodec codec = new CrdtSnapshotCodec();
+        when(snapshotStore.get("snapshot/100/12.bin")).thenReturn(Optional.empty(), Optional.of(codec.encodeText("hello")));
         doThrow(new RuntimeException("metadata update failed"))
                 .when(documentMapper)
                 .updateSnapshotMetadata(eq(100L), eq("snapshot/100/12.bin"), eq(12), eq("alice"), any());
@@ -176,7 +183,8 @@ class SnapshotCompactionExecutorTest {
         when(documentMapper.selectById(100L)).thenReturn(document);
         CrdtSnapshotCodec codec = new CrdtSnapshotCodec();
         when(snapshotStore.get("snapshot/100/10.bin")).thenReturn(Optional.of(codec.encodeText("hello from snapshot")));
-        when(snapshotStore.get("snapshot/100/12.bin")).thenReturn(Optional.empty());
+        when(snapshotStore.get("snapshot/100/12.bin"))
+                .thenReturn(Optional.empty(), Optional.of(codec.encodeText("hello from snapshot")));
 
         executor.execute(new DocumentCompactionTask(
                 100L,
@@ -221,5 +229,55 @@ class SnapshotCompactionExecutorTest {
         verify(eventPublisher).publish(eventCaptor.capture());
         assertThat(eventCaptor.getValue().payload().get("snapshotReused")).isEqualTo(true);
         assertThat(eventCaptor.getValue().payload().get("metadataUpdated")).isEqualTo(false);
+        assertThat(eventCaptor.getValue().payload().get("verificationStatus")).isEqualTo("reused_existing_verified");
+    }
+
+    @Test
+    void execute_shouldThrowAndNotUpdateMetadataWhenReadBackMismatch() {
+        CollaborativeDocumentEntity document = new CollaborativeDocumentEntity();
+        document.setId(100L);
+        document.setLatestRevision(12);
+        document.setContent("hello");
+        document.setUpdatedBy("alice");
+        when(documentMapper.selectById(100L)).thenReturn(document);
+        CrdtSnapshotCodec codec = new CrdtSnapshotCodec();
+        when(snapshotStore.get("snapshot/100/12.bin"))
+                .thenReturn(Optional.empty(), Optional.of(codec.encodeText("corrupted")));
+
+        assertThatThrownBy(() -> executor.execute(new DocumentCompactionTask(
+                100L,
+                "TIME_WINDOW",
+                Instant.parse("2026-04-30T10:00:00Z")
+        )))
+                .isInstanceOf(SnapshotCompactionExecutor.SnapshotVerificationException.class)
+                .hasMessageContaining("payload mismatch");
+
+        verify(documentMapper, never()).updateSnapshotMetadata(any(), any(), any(), any(), any());
+        verify(cacheService, never()).evict(any());
+        verify(eventPublisher, never()).publish(any());
+    }
+
+    @Test
+    void execute_shouldUpdateMetadataAfterSnapshotVerification() {
+        CollaborativeDocumentEntity document = new CollaborativeDocumentEntity();
+        document.setId(100L);
+        document.setLatestRevision(12);
+        document.setContent("hello");
+        document.setUpdatedBy("alice");
+        when(documentMapper.selectById(100L)).thenReturn(document);
+        CrdtSnapshotCodec codec = new CrdtSnapshotCodec();
+        when(snapshotStore.get("snapshot/100/12.bin")).thenReturn(Optional.empty(), Optional.of(codec.encodeText("hello")));
+
+        executor.execute(new DocumentCompactionTask(
+                100L,
+                "TIME_WINDOW",
+                Instant.parse("2026-04-30T10:00:00Z")
+        ));
+
+        InOrder inOrder = inOrder(snapshotStore, documentMapper);
+        inOrder.verify(snapshotStore).get("snapshot/100/12.bin");
+        inOrder.verify(snapshotStore).put(eq("snapshot/100/12.bin"), any());
+        inOrder.verify(snapshotStore).get("snapshot/100/12.bin");
+        inOrder.verify(documentMapper).updateSnapshotMetadata(eq(100L), eq("snapshot/100/12.bin"), eq(12), eq("alice"), any());
     }
 }

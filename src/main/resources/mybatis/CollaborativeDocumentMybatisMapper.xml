@@ -71,6 +71,17 @@
           and latest_revision = #{expectedRevision}
     </update>
 
+    <update id="actorSingleWriterUpdateMetadataOnly">
+        update collaborative_document
+        set title = #{title},
+            latest_revision = #{nextRevision},
+            updated_by = #{updatedBy},
+            updated_at = #{updatedAt},
+            lock_version = lock_version + 1
+        where id = #{id}
+          and latest_revision = #{expectedRevision}
+    </update>
+
     <update id="updateSnapshotMetadata">
         update collaborative_document
         set latest_snapshot_ref = #{latestSnapshotRef},

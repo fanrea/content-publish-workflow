@@ -60,6 +60,13 @@ public interface CollaborativeDocumentMybatisMapper extends BaseMapper<Collabora
                                 @Param("updatedBy") String updatedBy,
                                 @Param("updatedAt") LocalDateTime updatedAt);
 
+    int actorSingleWriterUpdateMetadataOnly(@Param("id") Long id,
+                                            @Param("expectedRevision") Integer expectedRevision,
+                                            @Param("title") String title,
+                                            @Param("nextRevision") Integer nextRevision,
+                                            @Param("updatedBy") String updatedBy,
+                                            @Param("updatedAt") LocalDateTime updatedAt);
+
     int updateSnapshotMetadata(@Param("id") Long id,
                                @Param("latestSnapshotRef") String latestSnapshotRef,
                                @Param("latestSnapshotRevision") Integer latestSnapshotRevision,
