@@ -43,6 +43,7 @@ public class RedisDocumentRealtimeCrossGatewayBroadcaster implements DocumentRea
     private final ObjectMapper objectMapper;
     private final String gatewayId;
     private final String channelPrefix;
+    private final String transientChannelPrefix;
     private final Map<String, Instant> recentInboundPayloads = new ConcurrentHashMap<>();
     private volatile RedisMessageListenerContainer listenerContainer;
 
@@ -51,16 +52,29 @@ public class RedisDocumentRealtimeCrossGatewayBroadcaster implements DocumentRea
             DocumentRealtimeSessionRegistry sessionRegistry,
             ObjectMapper objectMapper,
             @Value("${workflow.realtime.gateway-id:gateway-local}") String gatewayId,
-            @Value("${workflow.realtime.redis-broadcast.channel:cpw:realtime:broadcast}") String channel) {
+            @Value("${workflow.realtime.redis-broadcast.channel:cpw:realtime:broadcast}") String channel,
+            @Value("${workflow.realtime.redis-broadcast.transient-channel:cpw:realtime:transient}") String transientChannel) {
         this.redisTemplate = redisTemplate;
         this.sessionRegistry = sessionRegistry;
         this.objectMapper = objectMapper;
         this.gatewayId = gatewayId == null || gatewayId.isBlank() ? "gateway-local" : gatewayId.trim();
         this.channelPrefix = channel == null || channel.isBlank() ? "cpw:realtime:broadcast" : channel.trim();
+        this.transientChannelPrefix = transientChannel == null || transientChannel.isBlank()
+                ? "cpw:realtime:transient"
+                : transientChannel.trim();
     }
 
     @Override
     public void publish(DocumentWsEvent event) {
+        publishToPrefix(event, channelPrefix);
+    }
+
+    @Override
+    public void publishTransient(DocumentWsEvent event) {
+        publishToPrefix(event, transientChannelPrefix);
+    }
+
+    private void publishToPrefix(DocumentWsEvent event, String targetPrefix) {
         if (event == null || event.docId() == null || event.docId() <= 0) {
             return;
         }
@@ -76,11 +90,11 @@ public class RedisDocumentRealtimeCrossGatewayBroadcaster implements DocumentRea
         try {
             String payload = objectMapper.writeValueAsString(envelope);
             for (String targetGateway : targetGateways) {
-                redisTemplate.convertAndSend(channelOf(targetGateway), payload);
+                redisTemplate.convertAndSend(channelOf(targetPrefix, targetGateway), payload);
             }
         } catch (Exception ex) {
             log.warn("redis cross-gateway publish failed, channelPrefix={}, docId={}, eventType={}",
-                    channelPrefix,
+                    targetPrefix,
                     event.docId(),
                     event.type(),
                     ex);
@@ -97,13 +111,20 @@ public class RedisDocumentRealtimeCrossGatewayBroadcaster implements DocumentRea
         container.setConnectionFactory(redisTemplate.getConnectionFactory());
         container.setErrorHandler(ex -> log.warn("redis cross-gateway listener error", ex));
         MessageListener listener = this::handleMessage;
-        String localChannel = localGatewayChannel();
-        container.addMessageListener(listener, ChannelTopic.of(localChannel));
+        String localDurableChannel = localGatewayChannel();
+        String localTransientChannel = localTransientGatewayChannel();
+        container.addMessageListener(listener, ChannelTopic.of(localDurableChannel));
+        if (!localDurableChannel.equals(localTransientChannel)) {
+            container.addMessageListener(listener, ChannelTopic.of(localTransientChannel));
+        }
         try {
             container.afterPropertiesSet();
             container.start();
             listenerContainer = container;
-            log.info("redis cross-gateway listener started, gatewayId={}, channel={}", gatewayId, localChannel);
+            log.info("redis cross-gateway listener started, gatewayId={}, durableChannel={}, transientChannel={}",
+                    gatewayId,
+                    localDurableChannel,
+                    localTransientChannel);
         } catch (Exception ex) {
             log.warn("redis cross-gateway listener start failed, fallback to local-only broadcast", ex);
             try {
@@ -216,11 +237,15 @@ public class RedisDocumentRealtimeCrossGatewayBroadcaster implements DocumentRea
     }
 
     private String localGatewayChannel() {
-        return channelOf(gatewayId);
+        return channelOf(channelPrefix, gatewayId);
     }
 
-    private String channelOf(String targetGatewayId) {
-        return channelPrefix + ":" + targetGatewayId;
+    private String localTransientGatewayChannel() {
+        return channelOf(transientChannelPrefix, gatewayId);
+    }
+
+    private String channelOf(String prefix, String targetGatewayId) {
+        return prefix + ":" + targetGatewayId;
     }
 
     private void broadcastLocal(Long documentId, DocumentWsEvent event) {

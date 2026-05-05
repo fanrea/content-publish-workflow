@@ -132,7 +132,8 @@ class DocumentRealtimePushServiceTest {
 
         pushService.publishPresence(100L, List.of("alice", "bob"), "participant joined");
 
-        verify(crossGatewayBroadcaster, times(1)).publish(any(DocumentWsEvent.class));
+        verify(crossGatewayBroadcaster, never()).publish(any(DocumentWsEvent.class));
+        verify(crossGatewayBroadcaster, times(1)).publishTransient(any(DocumentWsEvent.class));
         verify(session, never()).sendMessage(any(TextMessage.class));
         verify(recentUpdateCache, never()).append(any(DocumentOperation.class));
     }

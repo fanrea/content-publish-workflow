@@ -286,7 +286,7 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
                 cursor
         );
         broadcast(docId, event, session.getId());
-        publishCrossGateway(event);
+        publishCrossGatewayTransient(event);
     }
 
     private void handleConflict(WebSocketSession session, DocumentWsMessage inbound) {
@@ -497,11 +497,11 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    private void publishCrossGateway(DocumentWsEvent event) {
+    private void publishCrossGatewayTransient(DocumentWsEvent event) {
         try {
-            crossGatewayBroadcaster.publish(event);
+            crossGatewayBroadcaster.publishTransient(event);
         } catch (Exception ex) {
-            log.warn("cross-gateway publish failed from websocket handler, docId={}, eventType={}",
+            log.warn("cross-gateway transient publish failed from websocket handler, docId={}, eventType={}",
                     event == null ? null : event.docId(),
                     event == null ? null : event.type(),
                     ex);

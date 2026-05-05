@@ -31,7 +31,8 @@ public class DocumentActorCollaborationEngine implements CollaborationEngine, Di
 
     private final DocumentOperationService documentOperationService;
     private final DocumentRealtimePushService pushService;
-    private final List<ExecutorService> shardExecutors;
+    private final List<ExecutorService> actorShardExecutors;
+    private final List<ExecutorService> durabilityShardExecutors;
     private final List<ExecutorService> pushShardExecutors;
 
     public DocumentActorCollaborationEngine(DocumentOperationService documentOperationService,
@@ -47,8 +48,11 @@ public class DocumentActorCollaborationEngine implements CollaborationEngine, Di
         }
         this.documentOperationService = Objects.requireNonNull(documentOperationService, "documentOperationService must not be null");
         this.pushService = Objects.requireNonNull(pushService, "pushService must not be null");
-        this.shardExecutors = IntStream.range(0, shardCount)
+        this.actorShardExecutors = IntStream.range(0, shardCount)
                 .mapToObj(this::newSingleThreadShardExecutor)
+                .toList();
+        this.durabilityShardExecutors = IntStream.range(0, shardCount)
+                .mapToObj(this::newSingleThreadDurabilityExecutor)
                 .toList();
         this.pushShardExecutors = IntStream.range(0, shardCount)
                 .mapToObj(this::newSingleThreadPushExecutor)
@@ -59,13 +63,18 @@ public class DocumentActorCollaborationEngine implements CollaborationEngine, Di
     public void submit(DocumentOperationIngressCommand command) {
         DocumentOperationIngressCommand normalized = Objects.requireNonNull(command, "command must not be null");
         Long documentId = Objects.requireNonNull(normalized.docId(), "documentId must not be null");
-        shardExecutor(documentId).execute(() -> applyAndPush(normalized));
+        actorShardExecutor(documentId).execute(() -> dispatchToDurability(normalized));
     }
 
     @Override
     public void destroy() {
-        shutdownExecutors(shardExecutors);
+        shutdownExecutors(actorShardExecutors);
+        shutdownExecutors(durabilityShardExecutors);
         shutdownExecutors(pushShardExecutors);
+    }
+
+    private void dispatchToDurability(DocumentOperationIngressCommand command) {
+        durabilityShardExecutor(command.docId()).execute(() -> applyAndPush(command));
     }
 
     private void applyAndPush(DocumentOperationIngressCommand command) {
@@ -110,9 +119,14 @@ public class DocumentActorCollaborationEngine implements CollaborationEngine, Di
         });
     }
 
-    private ExecutorService shardExecutor(Long documentId) {
-        int shardIndex = resolveShardIndex(documentId, shardExecutors.size());
-        return shardExecutors.get(shardIndex);
+    private ExecutorService actorShardExecutor(Long documentId) {
+        int shardIndex = resolveShardIndex(documentId, actorShardExecutors.size());
+        return actorShardExecutors.get(shardIndex);
+    }
+
+    private ExecutorService durabilityShardExecutor(Long documentId) {
+        int shardIndex = resolveShardIndex(documentId, durabilityShardExecutors.size());
+        return durabilityShardExecutors.get(shardIndex);
     }
 
     private ExecutorService pushShardExecutor(Long documentId) {
@@ -131,6 +145,15 @@ public class DocumentActorCollaborationEngine implements CollaborationEngine, Di
     private ExecutorService newSingleThreadShardExecutor(int shardId) {
         ThreadFactory threadFactory = runnable -> {
             Thread thread = new Thread(runnable, "doc-actor-shard-" + shardId);
+            thread.setDaemon(true);
+            return thread;
+        };
+        return Executors.newSingleThreadExecutor(threadFactory);
+    }
+
+    private ExecutorService newSingleThreadDurabilityExecutor(int shardId) {
+        ThreadFactory threadFactory = runnable -> {
+            Thread thread = new Thread(runnable, "doc-durability-shard-" + shardId);
             thread.setDaemon(true);
             return thread;
         };

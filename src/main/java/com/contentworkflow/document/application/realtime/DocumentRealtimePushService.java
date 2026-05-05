@@ -163,7 +163,7 @@ public class DocumentRealtimePushService {
         if (documentId == null || documentId <= 0) {
             return;
         }
-        publishCrossGateway(DocumentWsEvent.presence(documentId, participants, message));
+        publishCrossGatewayTransient(DocumentWsEvent.presence(documentId, participants, message));
     }
 
     void broadcastFromRemote(Long documentId, DocumentWsEvent event) {
@@ -240,6 +240,14 @@ public class DocumentRealtimePushService {
             crossGatewayBroadcaster.publish(event);
         } catch (Exception ex) {
             log.warn("cross-gateway publish failed, docId={}, eventType={}", event.docId(), event.type(), ex);
+        }
+    }
+
+    private void publishCrossGatewayTransient(DocumentWsEvent event) {
+        try {
+            crossGatewayBroadcaster.publishTransient(event);
+        } catch (Exception ex) {
+            log.warn("cross-gateway transient publish failed, docId={}, eventType={}", event.docId(), event.type(), ex);
         }
     }
 

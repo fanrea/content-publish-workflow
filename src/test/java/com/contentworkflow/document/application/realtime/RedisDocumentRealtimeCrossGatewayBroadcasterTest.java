@@ -54,7 +54,8 @@ class RedisDocumentRealtimeCrossGatewayBroadcasterTest {
                 sessionRegistry,
                 objectMapper,
                 "gw-1",
-                "cpw:realtime:broadcast"
+                "cpw:realtime:broadcast",
+                "cpw:realtime:transient"
         );
     }
 
@@ -124,6 +125,17 @@ class RedisDocumentRealtimeCrossGatewayBroadcasterTest {
     }
 
     @Test
+    void publishTransient_shouldRouteToTransientPrefix() {
+        DocumentWsEvent event = DocumentWsEvent.cursorMoved(100L, "u-1", "alice", null);
+        when(setOperations.members("doc:100:room_gateways")).thenReturn(Set.of("gw-2", "gw-1"));
+
+        broadcaster.publishTransient(event);
+
+        verify(redisTemplate, times(1)).convertAndSend(org.mockito.ArgumentMatchers.eq("cpw:realtime:transient:gw-2"), org.mockito.ArgumentMatchers.anyString());
+        verify(redisTemplate, never()).convertAndSend(org.mockito.ArgumentMatchers.eq("cpw:realtime:transient:gw-1"), org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
     void publish_shouldSkipWhenRoomRouteMissing() {
         DocumentWsEvent event = DocumentWsEvent.presence(100L, List.of("alice"), "participant joined");
         when(setOperations.members("doc:100:room_gateways")).thenReturn(Set.of());
@@ -178,7 +190,8 @@ class RedisDocumentRealtimeCrossGatewayBroadcasterTest {
                         localRegistry,
                         objectMapper,
                         "gw-local",
-                        "cpw:realtime:broadcast"
+                        "cpw:realtime:broadcast",
+                        "cpw:realtime:transient"
                 );
 
         WebSocketSession localSession = mock(WebSocketSession.class);
@@ -253,7 +266,8 @@ class RedisDocumentRealtimeCrossGatewayBroadcasterTest {
                         localRegistry,
                         objectMapper,
                         "gw-local",
-                        "cpw:realtime:broadcast"
+                        "cpw:realtime:broadcast",
+                        "cpw:realtime:transient"
                 );
 
         WebSocketSession localSession = mock(WebSocketSession.class);

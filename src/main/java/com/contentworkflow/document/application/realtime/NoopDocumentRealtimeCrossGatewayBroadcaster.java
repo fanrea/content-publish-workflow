@@ -12,4 +12,9 @@ public class NoopDocumentRealtimeCrossGatewayBroadcaster implements DocumentReal
     public void publish(DocumentWsEvent event) {
         // no-op
     }
+
+    @Override
+    public void publishTransient(DocumentWsEvent event) {
+        // no-op
+    }
 }

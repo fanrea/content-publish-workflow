@@ -688,9 +688,11 @@ class DocumentRealtimeWebSocketHandlerTest {
 
         handler.handleTextMessage(session, new TextMessage(payload));
 
+        verify(ingressPublisher, never()).publish(any(DocumentOperationIngressCommand.class));
         verify(session, never()).sendMessage(any(TextMessage.class));
         verify(peer, times(1)).sendMessage(any(TextMessage.class));
-        verify(crossGatewayBroadcaster, times(1)).publish(any(DocumentWsEvent.class));
+        verify(crossGatewayBroadcaster, never()).publish(any(DocumentWsEvent.class));
+        verify(crossGatewayBroadcaster, times(1)).publishTransient(any(DocumentWsEvent.class));
     }
 
     @Test

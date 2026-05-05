@@ -32,22 +32,116 @@ public class OtMergeEngine implements MergeEngine {
             throw new BusinessException("DOCUMENT_INVALID_OPERATION", "operation length out of range");
         }
 
-        return switch (op.getOpType()) {
-            case INSERT -> new StringBuilder(textLength + text.length())
-                    .append(content, 0, position)
-                    .append(text)
-                    .append(content, position, textLength)
-                    .toString();
-            case DELETE -> new StringBuilder(Math.max(0, textLength - length))
-                    .append(content, 0, position)
-                    .append(content, position + length, textLength)
-                    .toString();
-            case REPLACE -> new StringBuilder(Math.max(0, textLength - length + text.length()))
-                    .append(content, 0, position)
-                    .append(text)
-                    .append(content, position + length, textLength)
-                    .toString();
-        };
+        PieceTable pieceTable = PieceTable.from(content);
+        switch (op.getOpType()) {
+            case INSERT -> pieceTable.insert(position, text);
+            case DELETE -> pieceTable.delete(position, length);
+            case REPLACE -> pieceTable.replace(position, length, text);
+        }
+        return pieceTable.build();
+    }
+
+    private static final class PieceTable {
+        private final String original;
+        private final StringBuilder added;
+        private final List<Piece> pieces;
+        private int length;
+
+        private PieceTable(String original) {
+            this.original = original;
+            this.added = new StringBuilder();
+            this.pieces = new ArrayList<>();
+            this.length = original.length();
+            if (!original.isEmpty()) {
+                this.pieces.add(Piece.original(0, original.length()));
+            }
+        }
+
+        static PieceTable from(String content) {
+            return new PieceTable(content);
+        }
+
+        void insert(int position, String text) {
+            if (text.isEmpty()) {
+                return;
+            }
+            int insertAt = splitAt(position);
+            int addStart = added.length();
+            added.append(text);
+            pieces.add(insertAt, Piece.added(addStart, text.length()));
+            length += text.length();
+        }
+
+        void delete(int position, int deleteLength) {
+            if (deleteLength <= 0) {
+                return;
+            }
+            int startIndex = splitAt(position);
+            int endIndex = splitAt(position + deleteLength);
+            if (startIndex < endIndex) {
+                pieces.subList(startIndex, endIndex).clear();
+            }
+            length -= deleteLength;
+        }
+
+        void replace(int position, int replaceLength, String text) {
+            delete(position, replaceLength);
+            insert(position, text);
+        }
+
+        String build() {
+            if (pieces.isEmpty()) {
+                return "";
+            }
+            StringBuilder merged = new StringBuilder(length);
+            for (Piece piece : pieces) {
+                CharSequence source = piece.fromOriginal ? original : added;
+                merged.append(source, piece.start, piece.start + piece.length);
+            }
+            return merged.toString();
+        }
+
+        private int splitAt(int position) {
+            if (position <= 0) {
+                return 0;
+            }
+            if (position >= length) {
+                return pieces.size();
+            }
+            int consumed = 0;
+            for (int index = 0; index < pieces.size(); index++) {
+                Piece piece = pieces.get(index);
+                int next = consumed + piece.length;
+                if (position == consumed) {
+                    return index;
+                }
+                if (position == next) {
+                    consumed = next;
+                    continue;
+                }
+                if (position < next) {
+                    int leftLength = position - consumed;
+                    int rightLength = piece.length - leftLength;
+                    Piece left = new Piece(piece.fromOriginal, piece.start, leftLength);
+                    Piece right = new Piece(piece.fromOriginal, piece.start + leftLength, rightLength);
+                    pieces.set(index, left);
+                    pieces.add(index + 1, right);
+                    return index + 1;
+                }
+                consumed = next;
+            }
+            return pieces.size();
+        }
+
+        private record Piece(boolean fromOriginal, int start, int length) {
+            static Piece original(int start, int length) {
+                return new Piece(true, start, length);
+            }
+
+            static Piece added(int start, int length) {
+                return new Piece(false, start, length);
+            }
+        }
     }
 
     @Override

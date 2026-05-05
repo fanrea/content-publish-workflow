@@ -10,7 +10,9 @@ import com.contentworkflow.document.interfaces.ws.DocumentWsOperation;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -89,10 +91,12 @@ class DocumentActorCollaborationEngineTest {
         AtomicInteger active = new AtomicInteger();
         AtomicInteger maxActive = new AtomicInteger();
         CountDownLatch done = new CountDownLatch(2);
+        List<String> applyThreadNames = new CopyOnWriteArrayList<>();
 
         doAnswer(invocation -> {
             int now = active.incrementAndGet();
             maxActive.updateAndGet(prev -> Math.max(prev, now));
+            applyThreadNames.add(Thread.currentThread().getName());
             try {
                 Thread.sleep(80);
                 Long docId = invocation.getArgument(0);
@@ -123,6 +127,55 @@ class DocumentActorCollaborationEngineTest {
             engine.submit(command(100L, 2L));
             assertThat(done.await(3, TimeUnit.SECONDS)).isTrue();
             assertThat(maxActive.get()).isEqualTo(1);
+            assertThat(applyThreadNames).hasSize(2);
+            assertThat(applyThreadNames)
+                    .allSatisfy(name -> {
+                        assertThat(name).contains("doc-durability-shard-");
+                        assertThat(name).doesNotContain("doc-actor-shard-");
+                    });
+        } finally {
+            engine.destroy();
+        }
+    }
+
+    @Test
+    void submit_shouldApplyOutsideActorShardThread() throws Exception {
+        DocumentOperationService operationService = mock(DocumentOperationService.class);
+        DocumentRealtimePushService pushService = mock(DocumentRealtimePushService.class);
+        DocumentActorCollaborationEngine engine = new DocumentActorCollaborationEngine(operationService, pushService, 2);
+
+        CountDownLatch done = new CountDownLatch(1);
+        List<String> applyThreadNames = new CopyOnWriteArrayList<>();
+        doAnswer(invocation -> {
+            applyThreadNames.add(Thread.currentThread().getName());
+            done.countDown();
+            Long docId = invocation.getArgument(0);
+            Long clientSeq = invocation.getArgument(3);
+            return applyResult(docId, clientSeq, false);
+        }).when(operationService).applyOperation(
+                anyLong(),
+                anyInt(),
+                anyString(),
+                anyLong(),
+                anyString(),
+                anyString(),
+                any(DocumentWsOperation.class),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any()
+        );
+
+        try {
+            engine.submit(command(100L, 1L));
+            assertThat(done.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(applyThreadNames).singleElement()
+                    .satisfies(name -> {
+                        assertThat(name).contains("doc-durability-shard-");
+                        assertThat(name).doesNotContain("doc-actor-shard-");
+                    });
         } finally {
             engine.destroy();
         }

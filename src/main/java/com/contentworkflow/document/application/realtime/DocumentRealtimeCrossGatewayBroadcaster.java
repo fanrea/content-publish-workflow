@@ -8,4 +8,6 @@ import com.contentworkflow.document.interfaces.ws.DocumentWsEvent;
 public interface DocumentRealtimeCrossGatewayBroadcaster {
 
     void publish(DocumentWsEvent event);
+
+    void publishTransient(DocumentWsEvent event);
 }
