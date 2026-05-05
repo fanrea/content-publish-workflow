@@ -1,5 +1,7 @@
 package com.contentworkflow.document.application.realtime;
 
+import java.util.OptionalLong;
+
 /**
  * Redis index abstraction for realtime gateway routing and presence.
  */
@@ -16,4 +18,10 @@ public interface DocumentRealtimeRedisIndex {
     void incrementOnlineUser(Long documentId, String userId);
 
     void decrementOnlineUser(Long documentId, String userId);
+
+    void upsertSessionClock(Long documentId, String sessionId, long clock);
+
+    void removeSessionClock(Long documentId, String sessionId);
+
+    OptionalLong minimumSessionClock(Long documentId);
 }

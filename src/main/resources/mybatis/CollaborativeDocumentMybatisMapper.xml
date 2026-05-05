@@ -45,6 +45,7 @@
         limit #{limit}
     </select>
 
+    <!-- Legacy optimistic-lock update path; realtime pipeline now uses actorSingleWriterUpdate. -->
     <update id="conditionalUpdate">
         update collaborative_document
         set title = #{title},
@@ -55,6 +56,18 @@
             lock_version = lock_version + 1
         where id = #{id}
           and lock_version = #{expectedVersion}
+          and latest_revision = #{expectedRevision}
+    </update>
+
+    <update id="actorSingleWriterUpdate">
+        update collaborative_document
+        set title = #{title},
+            content = #{content},
+            latest_revision = #{nextRevision},
+            updated_by = #{updatedBy},
+            updated_at = #{updatedAt},
+            lock_version = lock_version + 1
+        where id = #{id}
           and latest_revision = #{expectedRevision}
     </update>
 

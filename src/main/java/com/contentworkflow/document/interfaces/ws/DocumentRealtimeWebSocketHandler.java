@@ -1,15 +1,12 @@
 package com.contentworkflow.document.interfaces.ws;
 
 import com.contentworkflow.common.exception.BusinessException;
-import com.contentworkflow.document.application.DocumentCollaborationService;
-import com.contentworkflow.document.application.DocumentPermissionService;
 import com.contentworkflow.document.application.ingress.DocumentOperationIngressCommand;
 import com.contentworkflow.document.application.ingress.DocumentOperationIngressPublisher;
-import com.contentworkflow.document.application.realtime.DocumentOperationService;
+import com.contentworkflow.document.application.realtime.DocumentRealtimeCrossGatewayBroadcaster;
+import com.contentworkflow.document.application.realtime.DocumentRealtimeGatewayFacade;
 import com.contentworkflow.document.application.realtime.DocumentRealtimePresenceService;
-import com.contentworkflow.document.application.realtime.DocumentRealtimeRecentUpdateCache;
 import com.contentworkflow.document.application.realtime.DocumentRealtimeSessionRegistry;
-import com.contentworkflow.document.domain.entity.CollaborativeDocument;
 import com.contentworkflow.document.domain.entity.DocumentOperation;
 import com.contentworkflow.document.domain.enums.DocumentOpType;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -25,6 +22,8 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Native WebSocket handler (without STOMP).
@@ -34,32 +33,31 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentRealtimeWebSocketHandler.class);
     private static final int DEFAULT_SYNC_LIMIT = 200;
+    private static final int MAX_BASE_VECTOR_ENTRIES = 128;
+    private static final int MAX_BASE_VECTOR_ACTOR_ID_LENGTH = 128;
+    private static final int MAX_DELTA_BATCH_ID_LENGTH = 128;
+    private static final String DELTA_BATCH_SESSION_PREFIX = "delta-batch:";
+    private static final String PRESENCE_NAMES_SESSION_KEY = "realtime:presence:names";
 
     private final ObjectMapper objectMapper;
-    private final DocumentCollaborationService documentService;
-    private final DocumentPermissionService permissionService;
     private final DocumentOperationIngressPublisher ingressPublisher;
-    private final DocumentOperationService operationService;
+    private final DocumentRealtimeCrossGatewayBroadcaster crossGatewayBroadcaster;
+    private final DocumentRealtimeGatewayFacade gatewayFacade;
     private final DocumentRealtimePresenceService presenceService;
     private final DocumentRealtimeSessionRegistry sessionRegistry;
-    private final DocumentRealtimeRecentUpdateCache recentUpdateCache;
 
     public DocumentRealtimeWebSocketHandler(ObjectMapper objectMapper,
-                                            DocumentCollaborationService documentService,
-                                            DocumentPermissionService permissionService,
                                             DocumentOperationIngressPublisher ingressPublisher,
-                                            DocumentOperationService operationService,
+                                            DocumentRealtimeCrossGatewayBroadcaster crossGatewayBroadcaster,
+                                            DocumentRealtimeGatewayFacade gatewayFacade,
                                             DocumentRealtimePresenceService presenceService,
-                                            DocumentRealtimeSessionRegistry sessionRegistry,
-                                            DocumentRealtimeRecentUpdateCache recentUpdateCache) {
+                                            DocumentRealtimeSessionRegistry sessionRegistry) {
         this.objectMapper = objectMapper;
-        this.documentService = documentService;
-        this.permissionService = permissionService;
         this.ingressPublisher = ingressPublisher;
-        this.operationService = operationService;
+        this.crossGatewayBroadcaster = crossGatewayBroadcaster;
+        this.gatewayFacade = gatewayFacade;
         this.presenceService = presenceService;
         this.sessionRegistry = sessionRegistry;
-        this.recentUpdateCache = recentUpdateCache;
     }
 
     @Override
@@ -96,6 +94,7 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        clearAllTrackedPresenceNames(session);
         List<Long> affectedDocs = sessionRegistry.removeSession(session.getId());
         List<Long> affectedPresenceDocs = presenceService.removeSession(session.getId());
         for (Long docId : affectedDocs) {
@@ -118,50 +117,80 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
 
     private void handleJoin(WebSocketSession session, DocumentWsMessage inbound) {
         Long docId = requireDocumentId(inbound.getDocId());
-        permissionService.requireMember(docId, normalizeEditorId(inbound.getEditorId()));
+        String normalizedEditorId = normalizeEditorId(inbound.getEditorId());
+        DocumentRealtimeGatewayFacade.JoinDecision joinDecision = gatewayFacade.prepareJoin(docId, normalizedEditorId);
 
         sessionRegistry.bind(docId, session);
-        List<String> participants = presenceService.join(docId, session.getId(), inbound.getEditorName());
+        List<String> participantsBefore = presenceService.listParticipants(docId);
+        List<String> participants = joinPresenceIfNeeded(docId, session, inbound.getEditorName());
+        if (participants == null) {
+            participants = participantsBefore;
+        }
 
-        CollaborativeDocument document = documentService.getDocument(docId);
-        sendSafe(session, DocumentWsEvent.snapshot(
-                document.getId(),
-                document.getLatestRevision(),
-                document.getTitle(),
-                document.getContent()
-        ));
-        broadcast(docId, DocumentWsEvent.presence(docId, participants, "participant joined"), null);
+        if (joinDecision.snapshotAvailable()) {
+            sendSafe(session, DocumentWsEvent.snapshot(
+                    docId,
+                    joinDecision.revision(),
+                    joinDecision.title(),
+                    joinDecision.content()
+            ));
+        } else if (joinDecision.requiresInstruction()) {
+            sendSafe(session, instructionEvent(
+                    joinDecision.instructionType(),
+                    joinDecision.instructionMessage(),
+                    docId,
+                    inbound.getClientSeq(),
+                    null,
+                    null
+            ));
+        } else {
+            sendSafe(session, DocumentWsEvent.error(docId, "join decision is incomplete", inbound.getClientSeq()));
+        }
+        if (!participantsBefore.equals(participants)) {
+            broadcast(docId, DocumentWsEvent.presence(docId, participants, "participant joined"), null);
+        }
     }
 
     private void handleLeave(WebSocketSession session, DocumentWsMessage inbound) {
         Long docId = requireDocumentId(inbound.getDocId());
+        List<String> participantsBefore = presenceService.listParticipants(docId);
         sessionRegistry.unbind(docId, session.getId());
         List<String> participants = presenceService.leave(docId, session.getId());
-        broadcast(docId, DocumentWsEvent.presence(docId, participants, "participant left"), null);
+        clearTrackedPresenceName(session, docId);
+        if (!participantsBefore.equals(participants)) {
+            broadcast(docId, DocumentWsEvent.presence(docId, participants, "participant left"), null);
+        }
     }
 
     private void handleEdit(WebSocketSession session, DocumentWsMessage inbound) {
         Long docId = requireDocumentId(inbound.getDocId());
         Integer baseRevision = requireEditBaseRevision(inbound.getBaseRevision());
         Long clientSeq = requireClientSeq(inbound.getClientSeq());
+        String normalizedDeltaBatchId = normalizeOptionalDeltaBatchId(inbound.getDeltaBatchId());
+        Long normalizedClientClock = normalizeOptionalClientClock(inbound.getClientClock());
+        Map<String, Long> normalizedBaseVector = normalizeOptionalBaseVector(inbound.getBaseVector());
         String normalizedEditorId = normalizeEditorId(inbound.getEditorId());
         String normalizedEditorName = normalizeEditorName(inbound.getEditorName());
         DocumentWsOperation normalizedOperation = normalizeEditOperation(inbound.getOp());
 
-        permissionService.requireCanEdit(docId, normalizedEditorId);
+        gatewayFacade.authorizeCanEdit(docId, normalizedEditorId);
 
         sessionRegistry.bind(docId, session);
-        presenceService.join(docId, session.getId(), normalizedEditorName);
+        joinPresenceIfNeeded(docId, session, normalizedEditorName);
+        presenceService.upsertSessionClock(docId, session.getId(), normalizedClientClock);
 
         DocumentOperationIngressCommand ingressCommand = new DocumentOperationIngressCommand(
                 docId,
                 baseRevision,
-                resolveLogicalSessionId(inbound, session),
+                resolveIdempotencySessionId(inbound, session, normalizedDeltaBatchId),
                 clientSeq,
                 normalizedEditorId,
                 normalizedEditorName,
                 normalizedOperation,
-                inbound.getTimestamp() == null ? LocalDateTime.now() : inbound.getTimestamp()
+                inbound.getTimestamp() == null ? LocalDateTime.now() : inbound.getTimestamp(),
+                normalizedDeltaBatchId,
+                normalizedClientClock,
+                normalizedBaseVector
         );
 
         try {
@@ -186,13 +215,29 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
     private void handleSyncOps(WebSocketSession session, DocumentWsMessage inbound) {
         Long docId = requireDocumentId(inbound.getDocId());
         String normalizedEditorId = normalizeEditorId(inbound.getEditorId());
-        permissionService.requireMember(docId, normalizedEditorId);
-
+        String normalizedEditorName = normalizeEditorName(inbound.getEditorName());
         int fromRevision = normalizeSyncBaseRevision(inbound.getBaseRevision());
         int limit = inbound.getSyncLimit() == null ? DEFAULT_SYNC_LIMIT : inbound.getSyncLimit();
-        CollaborativeDocument latest = documentService.getDocument(docId);
-        int latestRevision = latest.getLatestRevision() == null ? 0 : latest.getLatestRevision();
-        List<DocumentOperation> operations = resolveSyncOperations(docId, fromRevision, limit, latestRevision);
+        DocumentRealtimeGatewayFacade.SyncDecision syncDecision =
+                gatewayFacade.prepareSync(docId, normalizedEditorId, fromRevision, limit);
+
+        sessionRegistry.bind(docId, session);
+        joinPresenceIfNeeded(docId, session, normalizedEditorName);
+
+        if (syncDecision.requiresInstruction()) {
+            sendSafe(session, instructionEvent(
+                    syncDecision.instructionType(),
+                    syncDecision.instructionMessage(),
+                    docId,
+                    inbound.getClientSeq(),
+                    fromRevision,
+                    syncDecision.latestRevision()
+            ));
+            return;
+        }
+
+        int latestRevision = syncDecision.latestRevision();
+        List<DocumentOperation> operations = syncDecision.operations();
         for (DocumentOperation operation : operations) {
             sendSafe(session, DocumentWsEvent.applied(
                     docId,
@@ -219,10 +264,10 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
     private void handleCursorMove(WebSocketSession session, DocumentWsMessage inbound) {
         Long docId = requireDocumentId(inbound.getDocId());
         String normalizedEditorId = normalizeEditorId(inbound.getEditorId());
-        permissionService.requireMember(docId, normalizedEditorId);
+        gatewayFacade.authorizeMember(docId, normalizedEditorId);
 
         sessionRegistry.bind(docId, session);
-        presenceService.join(docId, session.getId(), inbound.getEditorName());
+        joinPresenceIfNeeded(docId, session, inbound.getEditorName());
 
         DocumentWsCursor cursor = normalizeCursor(inbound.getCursor());
         DocumentWsEvent event = DocumentWsEvent.cursorMoved(
@@ -232,6 +277,7 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
                 cursor
         );
         broadcast(docId, event, session.getId());
+        publishCrossGateway(event);
     }
 
     private void handleConflict(WebSocketSession session, DocumentWsMessage inbound) {
@@ -240,14 +286,29 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
             sendSafe(session, DocumentWsEvent.error(docId, "invalid documentId", inbound.getClientSeq()));
             return;
         }
-        CollaborativeDocument latest = documentService.getDocument(docId);
-        sendSafe(session, DocumentWsEvent.nackConflict(
-                docId,
-                inbound.getClientSeq(),
-                latest.getLatestRevision(),
-                latest.getTitle(),
-                latest.getContent()
-        ));
+        DocumentRealtimeGatewayFacade.ConflictDecision decision = gatewayFacade.resolveConflict(docId);
+        if (decision.snapshotAvailable()) {
+            sendSafe(session, DocumentWsEvent.nackConflict(
+                    docId,
+                    inbound.getClientSeq(),
+                    decision.latestRevision(),
+                    decision.title(),
+                    decision.content()
+            ));
+            return;
+        }
+        if (decision.requiresInstruction()) {
+            sendSafe(session, instructionEvent(
+                    decision.instructionType(),
+                    decision.instructionMessage(),
+                    docId,
+                    inbound.getClientSeq(),
+                    null,
+                    decision.latestRevision()
+            ));
+            return;
+        }
+        sendSafe(session, DocumentWsEvent.error(docId, "conflict decision is incomplete", inbound.getClientSeq()));
     }
 
     private Long requireDocumentId(Long docId) {
@@ -276,6 +337,53 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
             throw new BusinessException("INVALID_ARGUMENT", "clientSeq must be > 0");
         }
         return clientSeq;
+    }
+
+    private String normalizeOptionalDeltaBatchId(String deltaBatchId) {
+        if (deltaBatchId == null) {
+            return null;
+        }
+        String normalized = deltaBatchId.trim();
+        if (normalized.isEmpty()) {
+            throw new BusinessException("INVALID_ARGUMENT", "deltaBatchId must not be blank");
+        }
+        if (normalized.length() > MAX_DELTA_BATCH_ID_LENGTH) {
+            throw new BusinessException("INVALID_ARGUMENT", "deltaBatchId is too long");
+        }
+        return normalized;
+    }
+
+    private Long normalizeOptionalClientClock(Long clientClock) {
+        if (clientClock == null) {
+            return null;
+        }
+        if (clientClock <= 0) {
+            throw new BusinessException("INVALID_ARGUMENT", "clientClock must be > 0");
+        }
+        return clientClock;
+    }
+
+    private Map<String, Long> normalizeOptionalBaseVector(Map<String, Long> baseVector) {
+        if (baseVector == null || baseVector.isEmpty()) {
+            return baseVector;
+        }
+        if (baseVector.size() > MAX_BASE_VECTOR_ENTRIES) {
+            throw new BusinessException("INVALID_ARGUMENT", "baseVector size exceeds limit");
+        }
+        for (Map.Entry<String, Long> entry : baseVector.entrySet()) {
+            String actorId = entry.getKey();
+            Long clock = entry.getValue();
+            if (actorId == null || actorId.isBlank()) {
+                throw new BusinessException("INVALID_ARGUMENT", "baseVector actor id must not be blank");
+            }
+            if (actorId.length() > MAX_BASE_VECTOR_ACTOR_ID_LENGTH) {
+                throw new BusinessException("INVALID_ARGUMENT", "baseVector actor id is too long");
+            }
+            if (clock == null || clock < 0) {
+                throw new BusinessException("INVALID_ARGUMENT", "baseVector clock must be >= 0");
+            }
+        }
+        return baseVector;
     }
 
     private DocumentWsOperation normalizeEditOperation(DocumentWsOperation op) {
@@ -343,6 +451,15 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
         return session.getId();
     }
 
+    private String resolveIdempotencySessionId(DocumentWsMessage inbound,
+                                               WebSocketSession session,
+                                               String normalizedDeltaBatchId) {
+        if (normalizedDeltaBatchId != null) {
+            return DELTA_BATCH_SESSION_PREFIX + normalizedDeltaBatchId;
+        }
+        return resolveLogicalSessionId(inbound, session);
+    }
+
     private DocumentWsOperation toOperationView(DocumentOperation op) {
         DocumentWsOperation view = new DocumentWsOperation();
         view.setOpType(op.getOpType());
@@ -361,20 +478,6 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
         return view;
     }
 
-    private List<DocumentOperation> resolveSyncOperations(Long docId,
-                                                          int fromRevision,
-                                                          int limit,
-                                                          int latestRevision) {
-        if (latestRevision <= fromRevision) {
-            return List.of();
-        }
-        DocumentRealtimeRecentUpdateCache.ReplayResult cached = recentUpdateCache.replaySince(docId, fromRevision, limit);
-        if (cached.completeFromBase()) {
-            return cached.operations();
-        }
-        return operationService.listOperationsSince(docId, fromRevision, limit);
-    }
-
     private void broadcast(Long docId, DocumentWsEvent event, String excludeSessionId) {
         for (WebSocketSession target : sessionRegistry.sessionsOf(docId)) {
             if (excludeSessionId != null && excludeSessionId.equals(target.getId())) {
@@ -382,6 +485,43 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
             }
             sendSafe(target, event);
         }
+    }
+
+    private void publishCrossGateway(DocumentWsEvent event) {
+        try {
+            crossGatewayBroadcaster.publish(event);
+        } catch (Exception ex) {
+            log.warn("cross-gateway publish failed from websocket handler, docId={}, eventType={}",
+                    event == null ? null : event.docId(),
+                    event == null ? null : event.type(),
+                    ex);
+        }
+    }
+
+    private List<String> joinPresenceIfNeeded(Long docId, WebSocketSession session, String editorName) {
+        String normalizedEditorName = normalizeEditorName(editorName);
+        Map<Long, String> trackedNames = trackedPresenceNames(session);
+        String previousName = trackedNames.put(docId, normalizedEditorName);
+        if (normalizedEditorName.equals(previousName)) {
+            return null;
+        }
+        return presenceService.join(docId, session.getId(), normalizedEditorName);
+    }
+
+    private void clearTrackedPresenceName(WebSocketSession session, Long docId) {
+        trackedPresenceNames(session).remove(docId);
+    }
+
+    private void clearAllTrackedPresenceNames(WebSocketSession session) {
+        session.getAttributes().remove(PRESENCE_NAMES_SESSION_KEY);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<Long, String> trackedPresenceNames(WebSocketSession session) {
+        return (Map<Long, String>) session.getAttributes().computeIfAbsent(
+                PRESENCE_NAMES_SESSION_KEY,
+                key -> new ConcurrentHashMap<Long, String>()
+        );
     }
 
     private void sendSafe(WebSocketSession session, DocumentWsEvent event) {
@@ -394,5 +534,33 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
         } catch (IOException ex) {
             log.warn("websocket send failed, sessionId={}, eventType={}", target.getId(), event.type(), ex);
         }
+    }
+
+    private DocumentWsEvent instructionEvent(String instructionType,
+                                             String instructionMessage,
+                                             Long docId,
+                                             Long clientSeq,
+                                             Integer baseRevision,
+                                             Integer latestRevision) {
+        return new DocumentWsEvent(
+                instructionType,
+                instructionMessage,
+                docId,
+                null,
+                clientSeq,
+                null,
+                baseRevision,
+                latestRevision,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                List.of(),
+                LocalDateTime.now()
+        );
     }
 }

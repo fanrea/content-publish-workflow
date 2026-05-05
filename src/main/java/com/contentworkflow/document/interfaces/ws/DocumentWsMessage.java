@@ -3,6 +3,7 @@ package com.contentworkflow.document.interfaces.ws;
 import lombok.Data;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 
 /**
  * WebSocket 入站消息模型（自定义轻量协议）。
@@ -28,6 +29,9 @@ public class DocumentWsMessage {
      */
     private Long clientSeq;
     private String clientSessionId;
+    private String deltaBatchId;
+    private Long clientClock;
+    private Map<String, Long> baseVector;
     /**
      * 编辑人标识。
      */

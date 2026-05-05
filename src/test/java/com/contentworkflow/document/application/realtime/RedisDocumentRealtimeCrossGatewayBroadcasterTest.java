@@ -16,6 +16,7 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -166,6 +167,7 @@ class RedisDocumentRealtimeCrossGatewayBroadcasterTest {
         DocumentRealtimeWebSocketHandler handler = new DocumentRealtimeWebSocketHandler(
                 objectMapper,
                 mock(DocumentOperationIngressPublisher.class),
+                new NoopDocumentRealtimeCrossGatewayBroadcaster(),
                 localGatewayFacade,
                 localPresenceService,
                 localRegistry
@@ -182,6 +184,7 @@ class RedisDocumentRealtimeCrossGatewayBroadcasterTest {
         WebSocketSession localSession = mock(WebSocketSession.class);
         when(localSession.getId()).thenReturn("ws-sync-1");
         when(localSession.isOpen()).thenReturn(true);
+        when(localSession.getAttributes()).thenReturn(new ConcurrentHashMap<>());
 
         handler.handleTextMessage(localSession, new TextMessage("""
                 {
@@ -239,6 +242,7 @@ class RedisDocumentRealtimeCrossGatewayBroadcasterTest {
         DocumentRealtimeWebSocketHandler handler = new DocumentRealtimeWebSocketHandler(
                 objectMapper,
                 mock(DocumentOperationIngressPublisher.class),
+                new NoopDocumentRealtimeCrossGatewayBroadcaster(),
                 localGatewayFacade,
                 localPresenceService,
                 localRegistry
@@ -255,6 +259,7 @@ class RedisDocumentRealtimeCrossGatewayBroadcasterTest {
         WebSocketSession localSession = mock(WebSocketSession.class);
         when(localSession.getId()).thenReturn("ws-join-1");
         when(localSession.isOpen()).thenReturn(true);
+        when(localSession.getAttributes()).thenReturn(new ConcurrentHashMap<>());
 
         handler.handleTextMessage(localSession, new TextMessage("""
                 {
@@ -284,5 +289,24 @@ class RedisDocumentRealtimeCrossGatewayBroadcasterTest {
         assertThat(remotePresence.type()).isEqualTo("PRESENCE");
         assertThat(remotePresence.participants()).containsExactly("alice", "bob");
         assertThat(localPresenceService.listParticipants(100L)).containsExactly("alice");
+    }
+
+    @Test
+    void onBroadcastPayload_shouldDeduplicateSamePayloadWithinWindow() throws Exception {
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getId()).thenReturn("s-1");
+        when(session.isOpen()).thenReturn(true);
+        when(sessionRegistry.sessionsOf(100L)).thenReturn(List.of(session));
+        when(sessionRegistry.resolveSendSession(session)).thenReturn(session);
+
+        DocumentWsEvent event = DocumentWsEvent.presence(100L, List.of("alice"), "participant joined");
+        String payload = objectMapper.writeValueAsString(
+                new DocumentRealtimeCrossGatewayEnvelope("gw-2", 100L, event)
+        );
+
+        broadcaster.onBroadcastPayload(payload);
+        broadcaster.onBroadcastPayload(payload);
+
+        verify(session, times(1)).sendMessage(org.mockito.ArgumentMatchers.any(TextMessage.class));
     }
 }

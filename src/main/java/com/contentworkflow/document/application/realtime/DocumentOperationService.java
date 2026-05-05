@@ -53,7 +53,6 @@ public class DocumentOperationService {
     private final DocumentCacheService cacheService;
     private final DocumentEventPublisher eventPublisher;
     private final MergeEngine mergeEngine;
-    private final boolean actorSingleWriterEnabled;
 
     public DocumentOperationService(CollaborativeDocumentMybatisMapper documentMapper,
                                     DocumentRevisionMybatisMapper revisionMapper,
@@ -75,7 +74,11 @@ public class DocumentOperationService {
         this.cacheService = cacheService;
         this.eventPublisher = eventPublisher;
         this.mergeEngine = mergeEngine;
-        this.actorSingleWriterEnabled = actorSingleWriterEnabled;
+        if (!actorSingleWriterEnabled) {
+            throw new IllegalStateException(
+                    "workflow.realtime.actor-single-writer.enabled=false is not supported; actor single-writer must stay enabled"
+            );
+        }
     }
 
     @Transactional
@@ -205,7 +208,7 @@ public class DocumentOperationService {
             );
         }
 
-        int maxAttempts = actorSingleWriterEnabled ? MAX_ACTOR_SINGLE_WRITER_RETRIES + 1 : 1;
+        int maxAttempts = MAX_ACTOR_SINGLE_WRITER_RETRIES + 1;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             if (attempt > 1) {
                 DocumentOperationEntity duplicated = deltaStore.findBySessionSeq(
@@ -230,6 +233,8 @@ public class DocumentOperationService {
                     normalizedBaseRevision,
                     normalizedEditorId,
                     normalizedClientSeq,
+                    normalizedClientClock,
+                    normalizedBaseVector,
                     normalizedOp,
                     normalizedRequestedTitle
             );
@@ -242,7 +247,7 @@ public class DocumentOperationService {
                     now
             );
             if (updated == 0) {
-                if (actorSingleWriterEnabled && attempt < maxAttempts) {
+                if (attempt < maxAttempts) {
                     continue;
                 }
                 CollaborativeDocumentEntity latest = requireDocument(normalizedDocId);
@@ -347,22 +352,9 @@ public class DocumentOperationService {
                                            PreparedOperation prepared,
                                            String normalizedEditorName,
                                            LocalDateTime now) {
-        if (actorSingleWriterEnabled) {
-            // Actor/queue serial order is the write authority; DB only gates durability with expected revision.
-            return documentMapper.actorSingleWriterUpdate(
-                    documentId,
-                    prepared.effectiveBaseRevision(),
-                    prepared.nextTitle(),
-                    prepared.nextContent(),
-                    prepared.nextRevision(),
-                    normalizedEditorName,
-                    now
-            );
-        }
-        // Legacy compatibility path: optimistic lock still available behind the feature toggle.
-        return documentMapper.conditionalUpdate(
+        // Actor/queue serial order is the write authority; DB only gates durability with expected revision.
+        return documentMapper.actorSingleWriterUpdate(
                 documentId,
-                prepared.current().getVersion(),
                 prepared.effectiveBaseRevision(),
                 prepared.nextTitle(),
                 prepared.nextContent(),
@@ -474,6 +466,8 @@ public class DocumentOperationService {
                                                       Integer baseRevision,
                                                       String editorId,
                                                       Long clientSeq,
+                                                      Long clientClock,
+                                                      Map<String, Long> baseVector,
                                                       DocumentWsOperation operation,
                                                       String requestedTitle) {
         CollaborativeDocumentEntity current = requireDocument(documentId);
@@ -501,12 +495,13 @@ public class DocumentOperationService {
                     effectiveOp,
                     appliedOps,
                     editorId,
-                    clientSeq
+                    clientSeq,
+                    new MergeEngine.RebaseMetadata(clientClock, baseVector)
             );
             effectiveBaseRevision = currentRevision;
         }
 
-        String currentContent = current.getContent() == null ? "" : current.getContent();
+        String currentContent = materializeCurrentDocumentContent(documentId, current);
         String nextTitle = resolveNextTitle(current.getTitle(), requestedTitle);
         String nextContent = mergeEngine.apply(currentContent, effectiveOp);
         int nextRevision = effectiveBaseRevision + 1;
@@ -793,7 +788,7 @@ public class DocumentOperationService {
 
     private String materializeRevisionContent(Long documentId, DocumentRevisionEntity targetRevision) {
         if (targetRevision.getContent() != null) {
-            return targetRevision.getContent();
+            return decodeSnapshotPayload(targetRevision.getContent());
         }
         int targetRevisionNo = targetRevision.getRevisionNo();
         DocumentRevisionEntity snapshot = revisionMapper.selectLatestSnapshotByRevision(documentId, targetRevisionNo)
@@ -840,6 +835,53 @@ public class DocumentOperationService {
         return rebuilt;
     }
 
+    private String materializeCurrentDocumentContent(Long documentId, CollaborativeDocumentEntity current) {
+        String fallback = decodeSnapshotPayload(current.getContent());
+        Integer latestRevision = current.getLatestRevision();
+        Integer snapshotRevision = current.getLatestSnapshotRevision();
+        String snapshotRef = current.getLatestSnapshotRef();
+        if (latestRevision == null
+                || latestRevision <= 0
+                || snapshotRevision == null
+                || snapshotRevision <= 0
+                || snapshotRevision > latestRevision
+                || snapshotRef == null
+                || snapshotRef.isBlank()) {
+            return fallback;
+        }
+
+        Optional<String> snapshotPayload = snapshotStore.get(snapshotRef);
+        if (snapshotPayload.isEmpty()) {
+            return fallback;
+        }
+        String rebuilt = decodeSnapshotPayload(snapshotPayload.get());
+        int replayCount = latestRevision - snapshotRevision;
+        if (replayCount <= 0) {
+            return rebuilt;
+        }
+        if (replayCount > MAX_SNAPSHOT_REPLAY_OPS) {
+            return fallback;
+        }
+
+        List<DocumentRevisionEntity> revisionsToReplay = revisionMapper.selectByRevisionRangeAsc(
+                documentId,
+                snapshotRevision,
+                latestRevision,
+                replayCount
+        );
+        if (revisionsToReplay.size() < replayCount) {
+            return fallback;
+        }
+        for (DocumentRevisionEntity replayRevision : revisionsToReplay) {
+            Optional<DocumentOperationEntity> operation = deltaStore.findByRevision(documentId, replayRevision.getRevisionNo());
+            if (operation.isEmpty()) {
+                return fallback;
+            }
+            rebuilt = mergeEngine.apply(rebuilt, toWsOperation(operation.get()));
+        }
+        return rebuilt;
+    }
+
     private String buildSnapshotRef(Long documentId, Integer revisionNo) {
         if (documentId == null || revisionNo == null) {
             throw new BusinessException("INVALID_ARGUMENT", "snapshot reference requires documentId and revisionNo");
@@ -864,7 +906,7 @@ public class DocumentOperationService {
 
     private String loadSnapshotContent(Long documentId, DocumentRevisionEntity snapshotRevision) {
         if (snapshotRevision.getContent() != null) {
-            return snapshotRevision.getContent();
+            return decodeSnapshotPayload(snapshotRevision.getContent());
         }
 
         String defaultSnapshotRef = buildSnapshotRef(documentId, snapshotRevision.getRevisionNo());

@@ -53,7 +53,9 @@ workflow:
     # Default uses filesystem to keep high-frequency deltas out of MySQL.
     # `mysql` remains a compatibility fallback only.
     # Any other value is treated as misconfiguration and fails startup.
+    # To use mysql explicitly, mysql-compat-enabled must be true.
     backend: ${DOC_OPERATION_LOG_BACKEND:filesystem}
+    mysql-compat-enabled: ${DOC_OPERATION_LOG_MYSQL_COMPAT_ENABLED:false}
     filesystem:
       root-dir: ${DOC_OPERATION_LOG_FS_ROOT_DIR:./data/operation-log}
   redis-cache:
@@ -66,8 +68,8 @@ workflow:
     merge-engine: ${DOC_REALTIME_MERGE_ENGINE:crdt}
     actor-single-writer:
       # Stage2 actor single-writer switch:
-      # true  -> actor/queue order is write authority; DB update only checks expected revision.
-      # false -> legacy compatibility path with DB optimistic lock.
+      # true -> actor/queue order is write authority; DB update only checks expected revision.
+      # false is treated as misconfiguration and startup fails.
       enabled: ${DOC_REALTIME_ACTOR_SINGLE_WRITER_ENABLED:true}
     gateway:
       # Strict stateless mode: gateway no longer blocks on synchronous JOIN/SYNC DB reads.

@@ -9,6 +9,8 @@ public class NoopDocumentOperationIngressPublisher implements DocumentOperationI
 
     @Override
     public void publish(DocumentOperationIngressCommand command) {
-        throw new IllegalStateException("document operation ingress mq is not enabled");
+        throw new IllegalStateException(
+                "EDIT_OP ingress requires RocketMQ. Enable workflow.ingress.rocketmq.enabled=true"
+        );
     }
 }

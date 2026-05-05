@@ -38,6 +38,7 @@ public interface CollaborativeDocumentMybatisMapper extends BaseMapper<Collabora
      * @param updatedAt 参数 updatedAt。
      * @return 方法执行后的结果对象。
      */
+    @Deprecated
     int conditionalUpdate(@Param("id") Long id,
                           @Param("expectedVersion") Long expectedVersion,
                           @Param("expectedRevision") Integer expectedRevision,
@@ -46,6 +47,18 @@ public interface CollaborativeDocumentMybatisMapper extends BaseMapper<Collabora
                           @Param("nextRevision") Integer nextRevision,
                           @Param("updatedBy") String updatedBy,
                           @Param("updatedAt") LocalDateTime updatedAt);
+
+    /**
+     * Actor single-writer update path:
+     * guard by expected revision only, and do not depend on lock_version match.
+     */
+    int actorSingleWriterUpdate(@Param("id") Long id,
+                                @Param("expectedRevision") Integer expectedRevision,
+                                @Param("title") String title,
+                                @Param("content") String content,
+                                @Param("nextRevision") Integer nextRevision,
+                                @Param("updatedBy") String updatedBy,
+                                @Param("updatedAt") LocalDateTime updatedAt);
 
     int updateSnapshotMetadata(@Param("id") Long id,
                                @Param("latestSnapshotRef") String latestSnapshotRef,

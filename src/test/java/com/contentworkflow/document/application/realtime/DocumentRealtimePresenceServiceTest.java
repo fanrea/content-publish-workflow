@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -75,8 +76,25 @@ class DocumentRealtimePresenceServiceTest {
         assertThat(service.listParticipants(100L)).containsExactly("bob");
     }
 
+    @Test
+    void upsertSessionClock_shouldTrackMinimumAndCleanupOnLeaveAndRemoveSession() {
+        service.join(100L, "s-1", "alice");
+        service.join(100L, "s-2", "bob");
+        service.upsertSessionClock(100L, "s-1", 20L);
+        service.upsertSessionClock(100L, "s-2", 10L);
+
+        assertThat(redisIndex.minimumSessionClock(100L)).hasValue(10L);
+
+        service.leave(100L, "s-2");
+        assertThat(redisIndex.minimumSessionClock(100L)).hasValue(20L);
+
+        service.removeSession("s-1");
+        assertThat(redisIndex.minimumSessionClock(100L)).isEmpty();
+    }
+
     private static final class RecordingRedisIndex implements DocumentRealtimeRedisIndex {
         private final Map<String, Integer> onlineUserCounter = new HashMap<>();
+        private final Map<String, Long> sessionClocks = new HashMap<>();
 
         @Override
         public void addRoomGateway(Long documentId) {
@@ -115,12 +133,34 @@ class DocumentRealtimePresenceServiceTest {
             onlineUserCounter.put(key, next);
         }
 
+        @Override
+        public void upsertSessionClock(Long documentId, String sessionId, long clock) {
+            sessionClocks.put(clockKey(documentId, sessionId), clock);
+        }
+
+        @Override
+        public void removeSessionClock(Long documentId, String sessionId) {
+            sessionClocks.remove(clockKey(documentId, sessionId));
+        }
+
+        @Override
+        public OptionalLong minimumSessionClock(Long documentId) {
+            return sessionClocks.entrySet().stream()
+                    .filter(entry -> entry.getKey().startsWith(documentId + "|"))
+                    .mapToLong(Map.Entry::getValue)
+                    .min();
+        }
+
         int onlineUserCount(Long documentId, String userId) {
             return onlineUserCounter.getOrDefault(key(documentId, userId), 0);
         }
 
         private String key(Long documentId, String userId) {
             return documentId + "|" + userId;
+        }
+
+        private String clockKey(Long documentId, String sessionId) {
+            return documentId + "|" + sessionId;
         }
     }
 }

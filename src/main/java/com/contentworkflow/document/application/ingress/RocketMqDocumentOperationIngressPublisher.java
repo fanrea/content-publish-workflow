@@ -14,6 +14,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
+import java.util.Objects;
+
 @Service
 @ConditionalOnProperty(prefix = "workflow.ingress.rocketmq", name = "enabled", havingValue = "true")
 public class RocketMqDocumentOperationIngressPublisher implements DocumentOperationIngressPublisher, InitializingBean, DisposableBean {
@@ -83,16 +85,18 @@ public class RocketMqDocumentOperationIngressPublisher implements DocumentOperat
 
     @Override
     public void publish(DocumentOperationIngressCommand command) throws Exception {
-        if (!started || command == null) {
-            return;
+        DocumentOperationIngressCommand normalized = Objects.requireNonNull(command, "command must not be null");
+        if (!started) {
+            throw new IllegalStateException("document operation ingress rocketmq producer is not started");
         }
+        Objects.requireNonNull(normalized.docId(), "command.docId must not be null");
         Message message = new Message(
                 topic,
                 MESSAGE_TAG,
-                objectMapper.writeValueAsBytes(command)
+                objectMapper.writeValueAsBytes(normalized)
         );
-        message.setKeys(buildMessageKey(command));
-        publishWithRetry(message, command);
+        message.setKeys(buildMessageKey(normalized));
+        publishWithRetry(message, normalized);
     }
 
     private void publishWithRetry(Message message, DocumentOperationIngressCommand command) throws Exception {

@@ -4,10 +4,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.net.InetAddress;
+import java.util.Map;
+import java.util.OptionalLong;
 import java.util.UUID;
 
 @Service
@@ -101,12 +104,72 @@ public class RedisDocumentRealtimeRedisIndex implements DocumentRealtimeRedisInd
         }
     }
 
+    @Override
+    public void upsertSessionClock(Long documentId, String sessionId, long clock) {
+        if (!isValidDocumentId(documentId) || isBlank(sessionId) || clock <= 0L) {
+            return;
+        }
+        try {
+            redisTemplate.opsForHash().put(sessionClocksKey(documentId), sessionId, Long.toString(clock));
+        } catch (Exception ex) {
+            log.warn("realtime redis index upsert session clock failed, docId={}, sessionId={}, clock={}",
+                    documentId,
+                    sessionId,
+                    clock,
+                    ex);
+        }
+    }
+
+    @Override
+    public void removeSessionClock(Long documentId, String sessionId) {
+        if (!isValidDocumentId(documentId) || isBlank(sessionId)) {
+            return;
+        }
+        try {
+            redisTemplate.opsForHash().delete(sessionClocksKey(documentId), sessionId);
+        } catch (Exception ex) {
+            log.warn("realtime redis index remove session clock failed, docId={}, sessionId={}",
+                    documentId,
+                    sessionId,
+                    ex);
+        }
+    }
+
+    @Override
+    public OptionalLong minimumSessionClock(Long documentId) {
+        if (!isValidDocumentId(documentId)) {
+            return OptionalLong.empty();
+        }
+        try {
+            HashOperations<String, Object, Object> hashOperations = redisTemplate.opsForHash();
+            Map<Object, Object> entries = hashOperations.entries(sessionClocksKey(documentId));
+            if (entries == null || entries.isEmpty()) {
+                return OptionalLong.empty();
+            }
+            OptionalLong min = entries.values().stream()
+                    .filter(value -> value != null)
+                    .map(Object::toString)
+                    .map(this::parsePositiveLong)
+                    .filter(OptionalLong::isPresent)
+                    .mapToLong(OptionalLong::getAsLong)
+                    .min();
+            return min.isPresent() ? min : OptionalLong.empty();
+        } catch (Exception ex) {
+            log.warn("realtime redis index minimum session clock failed, docId={}", documentId, ex);
+            return OptionalLong.empty();
+        }
+    }
+
     private String roomGatewaysKey(Long documentId) {
         return "doc:" + documentId + ":room_gateways";
     }
 
     private String onlineUsersKey(Long documentId) {
         return "doc:" + documentId + ":online_users";
+    }
+
+    private String sessionClocksKey(Long documentId) {
+        return "doc:" + documentId + ":session_clocks";
     }
 
     private String gatewaySessionsKey() {
@@ -134,5 +197,20 @@ public class RedisDocumentRealtimeRedisIndex implements DocumentRealtimeRedisInd
 
     private boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    private OptionalLong parsePositiveLong(String value) {
+        if (isBlank(value)) {
+            return OptionalLong.empty();
+        }
+        try {
+            long parsed = Long.parseLong(value);
+            if (parsed <= 0L) {
+                return OptionalLong.empty();
+            }
+            return OptionalLong.of(parsed);
+        } catch (NumberFormatException ex) {
+            return OptionalLong.empty();
+        }
     }
 }

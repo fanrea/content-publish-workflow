@@ -71,6 +71,7 @@ public class DocumentRealtimePresenceService {
         if (removedName != null) {
             redisIndex.decrementOnlineUser(documentId, removedName);
         }
+        redisIndex.removeSessionClock(documentId, sessionId);
         return listParticipants(documentId);
     }
 
@@ -93,9 +94,17 @@ public class DocumentRealtimePresenceService {
             if (removedName != null) {
                 redisIndex.decrementOnlineUser(docId, removedName);
             }
+            redisIndex.removeSessionClock(docId, sessionId);
             affected.add(docId);
         }
         return affected;
+    }
+
+    public void upsertSessionClock(Long documentId, String sessionId, Long clock) {
+        if (!isValid(documentId) || sessionId == null || sessionId.isBlank() || clock == null || clock <= 0L) {
+            return;
+        }
+        redisIndex.upsertSessionClock(documentId, sessionId, clock);
     }
 
     /**

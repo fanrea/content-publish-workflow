@@ -17,6 +17,12 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
 
+/**
+ * Stage1 ingress processing contract:
+ * 1) docId is deterministically routed to a single shard;
+ * 2) each shard is single-threaded;
+ * 3) commands sharing the same docId are processed in submit order on the same shard thread.
+ */
 @Service
 public class DocumentActorCollaborationEngine implements CollaborationEngine, DisposableBean {
 
@@ -78,7 +84,13 @@ public class DocumentActorCollaborationEngine implements CollaborationEngine, Di
                     command.clientSeq(),
                     command.editorId(),
                     command.editorName(),
-                    command.op()
+                    command.op(),
+                    null,
+                    null,
+                    null,
+                    command.deltaBatchId(),
+                    command.clientClock(),
+                    command.baseVector()
             );
             DocumentOperation operation = result.operation();
             if (!result.duplicated() && operation != null) {
@@ -93,8 +105,16 @@ public class DocumentActorCollaborationEngine implements CollaborationEngine, Di
     }
 
     private ExecutorService shardExecutor(Long documentId) {
-        int shardIndex = Math.floorMod(documentId.hashCode(), shardExecutors.size());
+        int shardIndex = resolveShardIndex(documentId, shardExecutors.size());
         return shardExecutors.get(shardIndex);
+    }
+
+    static int resolveShardIndex(Long documentId, int shardCount) {
+        Objects.requireNonNull(documentId, "documentId must not be null");
+        if (shardCount <= 0) {
+            throw new IllegalArgumentException("shardCount must be > 0");
+        }
+        return Math.floorMod(documentId.hashCode(), shardCount);
     }
 
     private ExecutorService newSingleThreadShardExecutor(int shardId) {

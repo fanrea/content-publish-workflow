@@ -21,22 +21,29 @@ import org.springframework.web.socket.WebSocketSession;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 @ConditionalOnProperty(prefix = "workflow.realtime.redis-broadcast", name = "enabled", havingValue = "true")
 public class RedisDocumentRealtimeCrossGatewayBroadcaster implements DocumentRealtimeCrossGatewayBroadcaster {
 
     private static final Logger log = LoggerFactory.getLogger(RedisDocumentRealtimeCrossGatewayBroadcaster.class);
+    private static final Duration INBOUND_DEDUP_WINDOW = Duration.ofSeconds(5);
+    private static final int MAX_INBOUND_DEDUP_ENTRIES = 4096;
 
     private final StringRedisTemplate redisTemplate;
     private final DocumentRealtimeSessionRegistry sessionRegistry;
     private final ObjectMapper objectMapper;
     private final String gatewayId;
     private final String channelPrefix;
+    private final Map<String, Instant> recentInboundPayloads = new ConcurrentHashMap<>();
     private volatile RedisMessageListenerContainer listenerContainer;
 
     public RedisDocumentRealtimeCrossGatewayBroadcaster(
@@ -122,6 +129,9 @@ public class RedisDocumentRealtimeCrossGatewayBroadcaster implements DocumentRea
 
     void onBroadcastPayload(String payload) {
         if (payload == null || payload.isBlank()) {
+            return;
+        }
+        if (shouldSkipDuplicateInboundPayload(payload)) {
             return;
         }
         try {
@@ -216,6 +226,32 @@ public class RedisDocumentRealtimeCrossGatewayBroadcaster implements DocumentRea
     private void broadcastLocal(Long documentId, DocumentWsEvent event) {
         for (WebSocketSession session : sessionRegistry.sessionsOf(documentId)) {
             sendSafe(session, event);
+        }
+    }
+
+    private boolean shouldSkipDuplicateInboundPayload(String payload) {
+        Instant now = Instant.now();
+        String key = inboundPayloadKey(payload);
+        Instant previous = recentInboundPayloads.put(key, now);
+        pruneRecentInboundPayloads(now);
+        return previous != null && Duration.between(previous, now).compareTo(INBOUND_DEDUP_WINDOW) < 0;
+    }
+
+    private String inboundPayloadKey(String payload) {
+        return payload.length() + ":" + Integer.toHexString(payload.hashCode());
+    }
+
+    private void pruneRecentInboundPayloads(Instant now) {
+        if (recentInboundPayloads.size() <= MAX_INBOUND_DEDUP_ENTRIES) {
+            return;
+        }
+        Instant cutoff = now.minus(INBOUND_DEDUP_WINDOW);
+        Iterator<Map.Entry<String, Instant>> iterator = recentInboundPayloads.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<String, Instant> entry = iterator.next();
+            if (entry.getValue().isBefore(cutoff)) {
+                iterator.remove();
+            }
         }
     }
 

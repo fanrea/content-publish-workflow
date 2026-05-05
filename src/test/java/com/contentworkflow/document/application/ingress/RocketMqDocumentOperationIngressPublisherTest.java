@@ -20,11 +20,52 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class RocketMqDocumentOperationIngressPublisherTest {
+
+    @Test
+    void publish_shouldFailFastWhenProducerNotStarted() {
+        ObjectMapper objectMapper = new ObjectMapper();
+        DefaultMQProducer producer = mock(DefaultMQProducer.class);
+        RocketMqDocumentOperationIngressPublisher publisher =
+                new RocketMqDocumentOperationIngressPublisher(objectMapper, producer, "cpw_doc_ingress", 0, 0);
+
+        assertThatThrownBy(() -> publisher.publish(buildCommand(100L, 1L)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("producer is not started");
+
+        verify(producer, never()).send(any(Message.class), any(MessageQueueSelector.class), any());
+    }
+
+    @Test
+    void publish_shouldRejectNullCommand() {
+        ObjectMapper objectMapper = new ObjectMapper();
+        DefaultMQProducer producer = mock(DefaultMQProducer.class);
+        RocketMqDocumentOperationIngressPublisher publisher =
+                new RocketMqDocumentOperationIngressPublisher(objectMapper, producer, "cpw_doc_ingress", 0, 0);
+
+        assertThatThrownBy(() -> publisher.publish(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("command must not be null");
+    }
+
+    @Test
+    void publish_shouldRejectNullDocId() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        DefaultMQProducer producer = mock(DefaultMQProducer.class);
+        when(producer.getNamesrvAddr()).thenReturn("127.0.0.1:9876");
+        RocketMqDocumentOperationIngressPublisher publisher =
+                new RocketMqDocumentOperationIngressPublisher(objectMapper, producer, "cpw_doc_ingress", 0, 0);
+        publisher.afterPropertiesSet();
+
+        assertThatThrownBy(() -> publisher.publish(buildCommand(null, 1L)))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("command.docId must not be null");
+    }
 
     @Test
     void publish_shouldRouteByDocIdToStableQueue() throws Exception {
@@ -79,6 +120,28 @@ class RocketMqDocumentOperationIngressPublisherTest {
                 .hasMessageContaining("mq send failure");
 
         verify(producer, times(3)).send(any(Message.class), any(MessageQueueSelector.class), eq(20001L));
+    }
+
+    @Test
+    void resolveQueueIndex_shouldStayStableForHashCollisionAndBoundaryDocIds() {
+        int queueCount = 17;
+
+        Long collisionDocIdA = 4_294_967_295L;      // 0x00000000FFFFFFFF
+        Long collisionDocIdB = -4_294_967_296L;     // 0xFFFFFFFF00000000
+        assertThat(collisionDocIdA.hashCode()).isEqualTo(collisionDocIdB.hashCode());
+
+        int collisionIndexA = RocketMqDocumentOperationIngressPublisher.resolveQueueIndex(collisionDocIdA, queueCount);
+        int collisionIndexB = RocketMqDocumentOperationIngressPublisher.resolveQueueIndex(collisionDocIdB, queueCount);
+        assertThat(collisionIndexA).isEqualTo(collisionIndexB);
+        assertThat(collisionIndexA).isBetween(0, queueCount - 1);
+
+        int negativeDocIdIndex = RocketMqDocumentOperationIngressPublisher.resolveQueueIndex(-1L, queueCount);
+        assertThat(negativeDocIdIndex).isBetween(0, queueCount - 1);
+        assertThat(RocketMqDocumentOperationIngressPublisher.resolveQueueIndex(-1L, queueCount)).isEqualTo(negativeDocIdIndex);
+
+        int largeDocIdIndex = RocketMqDocumentOperationIngressPublisher.resolveQueueIndex(Long.MAX_VALUE, queueCount);
+        assertThat(largeDocIdIndex).isBetween(0, queueCount - 1);
+        assertThat(RocketMqDocumentOperationIngressPublisher.resolveQueueIndex(Long.MAX_VALUE, queueCount)).isEqualTo(largeDocIdIndex);
     }
 
     private DocumentOperationIngressCommand buildCommand(Long docId, Long clientSeq) {

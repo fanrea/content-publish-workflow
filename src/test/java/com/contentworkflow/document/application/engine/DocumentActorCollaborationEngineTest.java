@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -25,6 +26,59 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 class DocumentActorCollaborationEngineTest {
+
+    @Test
+    void resolveShardIndex_shouldRouteToStableShardForNormalDocId() {
+        assertThat(DocumentActorCollaborationEngine.resolveShardIndex(100L, 8)).isEqualTo(4);
+        assertThat(DocumentActorCollaborationEngine.resolveShardIndex(100L, 8)).isEqualTo(4);
+        assertThat(DocumentActorCollaborationEngine.resolveShardIndex(101L, 8)).isEqualTo(5);
+    }
+
+    @Test
+    void resolveShardIndex_shouldRejectNullDocId() {
+        assertThatThrownBy(() -> DocumentActorCollaborationEngine.resolveShardIndex(null, 8))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("documentId must not be null");
+    }
+
+    @Test
+    void resolveShardIndex_shouldRejectNonPositiveShardCount() {
+        assertThatThrownBy(() -> DocumentActorCollaborationEngine.resolveShardIndex(100L, 0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("shardCount must be > 0");
+        assertThatThrownBy(() -> DocumentActorCollaborationEngine.resolveShardIndex(100L, -1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("shardCount must be > 0");
+    }
+
+    @Test
+    void resolveShardIndex_shouldHandleBoundaryValues() {
+        assertThat(DocumentActorCollaborationEngine.resolveShardIndex(Long.MIN_VALUE, 1)).isEqualTo(0);
+        assertThat(DocumentActorCollaborationEngine.resolveShardIndex(Long.MAX_VALUE, 1)).isEqualTo(0);
+
+        int shardCount = 31;
+        int minValueShard = DocumentActorCollaborationEngine.resolveShardIndex(Long.MIN_VALUE, shardCount);
+        int maxValueShard = DocumentActorCollaborationEngine.resolveShardIndex(Long.MAX_VALUE, shardCount);
+
+        assertThat(minValueShard).isBetween(0, shardCount - 1);
+        assertThat(maxValueShard).isBetween(0, shardCount - 1);
+        assertThat(DocumentActorCollaborationEngine.resolveShardIndex(Long.MIN_VALUE, shardCount)).isEqualTo(minValueShard);
+        assertThat(DocumentActorCollaborationEngine.resolveShardIndex(Long.MAX_VALUE, shardCount)).isEqualTo(maxValueShard);
+    }
+
+    @Test
+    void resolveShardIndex_shouldStayStableForHashCollisionDocIds() {
+        long collisionDocIdA = 4_294_967_295L;   // 0x00000000FFFFFFFF
+        long collisionDocIdB = -4_294_967_296L;  // 0xFFFFFFFF00000000
+        assertThat(Long.hashCode(collisionDocIdA)).isEqualTo(Long.hashCode(collisionDocIdB));
+
+        int shardCount = 16;
+        int shardA = DocumentActorCollaborationEngine.resolveShardIndex(collisionDocIdA, shardCount);
+        int shardB = DocumentActorCollaborationEngine.resolveShardIndex(collisionDocIdB, shardCount);
+
+        assertThat(shardA).isEqualTo(shardB);
+        assertThat(shardA).isBetween(0, shardCount - 1);
+    }
 
     @Test
     void submit_shouldProcessCommandsSeriallyForSameDocument() throws Exception {
@@ -55,7 +109,13 @@ class DocumentActorCollaborationEngineTest {
                 anyLong(),
                 anyString(),
                 anyString(),
-                any(DocumentWsOperation.class)
+                any(DocumentWsOperation.class),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any()
         );
 
         try {
@@ -100,7 +160,13 @@ class DocumentActorCollaborationEngineTest {
                 anyLong(),
                 anyString(),
                 anyString(),
-                any(DocumentWsOperation.class)
+                any(DocumentWsOperation.class),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any()
         );
 
         try {
@@ -133,7 +199,13 @@ class DocumentActorCollaborationEngineTest {
                         anyLong(),
                         anyString(),
                         anyString(),
-                        any(DocumentWsOperation.class)
+                        any(DocumentWsOperation.class),
+                        any(),
+                        any(),
+                        any(),
+                        any(),
+                        any(),
+                        any()
                 );
 
         try {

@@ -7,6 +7,7 @@ import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorato
 
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.OptionalLong;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -144,6 +145,21 @@ class DocumentRealtimeSessionRegistryTest {
         @Override
         public void decrementOnlineUser(Long documentId, String userId) {
             // no-op for this test
+        }
+
+        @Override
+        public void upsertSessionClock(Long documentId, String sessionId, long clock) {
+            // no-op for this test
+        }
+
+        @Override
+        public void removeSessionClock(Long documentId, String sessionId) {
+            // no-op for this test
+        }
+
+        @Override
+        public OptionalLong minimumSessionClock(Long documentId) {
+            return OptionalLong.empty();
         }
     }
 }
