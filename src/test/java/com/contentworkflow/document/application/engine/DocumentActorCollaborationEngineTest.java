@@ -217,6 +217,70 @@ class DocumentActorCollaborationEngineTest {
         }
     }
 
+    @Test
+    void submit_shouldNotBlockApplyWhenPushIsSlowOrFailing() throws Exception {
+        DocumentOperationService operationService = mock(DocumentOperationService.class);
+        DocumentRealtimePushService pushService = mock(DocumentRealtimePushService.class);
+        DocumentActorCollaborationEngine engine = new DocumentActorCollaborationEngine(operationService, pushService, 1);
+
+        CountDownLatch applyDone = new CountDownLatch(2);
+        CountDownLatch pushEntered = new CountDownLatch(1);
+        CountDownLatch releasePush = new CountDownLatch(1);
+
+        doAnswer(invocation -> {
+            Long docId = invocation.getArgument(0);
+            Long clientSeq = invocation.getArgument(3);
+            applyDone.countDown();
+            return applyResult(docId, clientSeq, false);
+        }).when(operationService).applyOperation(
+                anyLong(),
+                anyInt(),
+                anyString(),
+                anyLong(),
+                anyString(),
+                anyString(),
+                any(DocumentWsOperation.class),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any()
+        );
+
+        doAnswer(invocation -> {
+            pushEntered.countDown();
+            releasePush.await(2, TimeUnit.SECONDS);
+            throw new RuntimeException("simulated push timeout");
+        }).when(pushService).broadcastOperationApplied(any(DocumentOperation.class));
+
+        try {
+            engine.submit(command(100L, 11L));
+            engine.submit(command(100L, 12L));
+
+            assertThat(pushEntered.await(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(applyDone.await(1, TimeUnit.SECONDS)).isTrue();
+            verify(operationService, times(2)).applyOperation(
+                    anyLong(),
+                    anyInt(),
+                    anyString(),
+                    anyLong(),
+                    anyString(),
+                    anyString(),
+                    any(DocumentWsOperation.class),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any()
+            );
+        } finally {
+            releasePush.countDown();
+            engine.destroy();
+        }
+    }
+
     private DocumentOperationIngressCommand command(Long docId, Long clientSeq) {
         DocumentWsOperation operation = new DocumentWsOperation();
         operation.setOpType(DocumentOpType.INSERT);

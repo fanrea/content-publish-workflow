@@ -16,7 +16,9 @@ import org.springframework.web.socket.WebSocketSession;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -28,6 +30,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class DocumentRealtimePushServiceTest {
+
+    private static final String REVISION_BY_DOC_SESSION_KEY = "realtime:revision:by-doc";
 
     private DocumentRealtimeSessionRegistry sessionRegistry;
     private DocumentRealtimeRecentUpdateCache recentUpdateCache;
@@ -155,6 +159,54 @@ class DocumentRealtimePushServiceTest {
         verify(session, times(1)).sendMessage(any(TextMessage.class));
         verify(crossGatewayBroadcaster, never()).publish(any(DocumentWsEvent.class));
         verify(recentUpdateCache, never()).append(any(DocumentOperation.class));
+    }
+
+    @Test
+    void broadcastOperationApplied_shouldPushInstructionWhenRevisionGapDetected() throws Exception {
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getId()).thenReturn("s-gap");
+        when(session.isOpen()).thenReturn(true);
+        ConcurrentHashMap<String, Object> attributes = new ConcurrentHashMap<>();
+        attributes.put(REVISION_BY_DOC_SESSION_KEY, new ConcurrentHashMap<>(Map.of(100L, 5)));
+        when(session.getAttributes()).thenReturn(attributes);
+
+        when(sessionRegistry.sessionsOf(100L)).thenReturn(List.of(session));
+        when(sessionRegistry.resolveSendSession(session)).thenReturn(session);
+
+        DocumentOperation operation = operation(100L, 7, 6);
+        pushService.broadcastOperationApplied(operation);
+        pushService.broadcastOperationApplied(operation);
+
+        ArgumentCaptor<TextMessage> outbound = ArgumentCaptor.forClass(TextMessage.class);
+        verify(session, times(1)).sendMessage(outbound.capture());
+        DocumentWsEvent event = objectMapper.readValue(outbound.getValue().getPayload(), DocumentWsEvent.class);
+        assertThat(event.type()).isEqualTo("PULL_UPDATES_REQUIRED");
+        assertThat(event.baseRevision()).isEqualTo(5);
+        assertThat(event.latestRevision()).isEqualTo(7);
+    }
+
+    @Test
+    void broadcastOperationApplied_shouldKeepAppliedWhenRevisionIsContinuous() throws Exception {
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getId()).thenReturn("s-ok");
+        when(session.isOpen()).thenReturn(true);
+        ConcurrentHashMap<String, Object> attributes = new ConcurrentHashMap<>();
+        attributes.put(REVISION_BY_DOC_SESSION_KEY, new ConcurrentHashMap<>(Map.of(100L, 6)));
+        when(session.getAttributes()).thenReturn(attributes);
+
+        when(sessionRegistry.sessionsOf(100L)).thenReturn(List.of(session));
+        when(sessionRegistry.resolveSendSession(session)).thenReturn(session);
+
+        pushService.broadcastOperationApplied(operation(100L, 7, 6));
+
+        ArgumentCaptor<TextMessage> outbound = ArgumentCaptor.forClass(TextMessage.class);
+        verify(session, times(1)).sendMessage(outbound.capture());
+        DocumentWsEvent event = objectMapper.readValue(outbound.getValue().getPayload(), DocumentWsEvent.class);
+        assertThat(event.type()).isEqualTo("OP_APPLIED");
+        assertThat(event.revision()).isEqualTo(7);
+        @SuppressWarnings("unchecked")
+        Map<Long, Integer> revisions = (Map<Long, Integer>) attributes.get(REVISION_BY_DOC_SESSION_KEY);
+        assertThat(revisions.get(100L)).isEqualTo(7);
     }
 
     private DocumentOperation operation(Long docId, int revision, int baseRevision) {

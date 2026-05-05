@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -53,7 +54,8 @@ public class RedisDocumentRealtimeRecentUpdateCache implements DocumentRealtimeR
         if (operation == null || operation.getDocumentId() == null || operation.getRevisionNo() == null) {
             return;
         }
-        String key = key(operation.getDocumentId());
+        Long documentId = operation.getDocumentId();
+        String key = key(documentId);
         try {
             String payload = objectMapper.writeValueAsString(RecentUpdate.from(operation));
             redisTemplate.opsForList().rightPush(key, payload);
@@ -61,15 +63,19 @@ public class RedisDocumentRealtimeRecentUpdateCache implements DocumentRealtimeR
             redisTemplate.expire(key, ttl);
         } catch (Exception ex) {
             log.warn("recent update cache append failed, docId={}, revision={}",
-                    operation.getDocumentId(),
+                    documentId,
                     operation.getRevisionNo(),
                     ex);
+            markDirty(documentId, operation.getRevisionNo());
         }
     }
 
     @Override
     public ReplayResult replaySince(Long documentId, int fromRevisionExclusive, int limit) {
         if (documentId == null || documentId <= 0 || limit <= 0) {
+            return new ReplayResult(List.of(), false);
+        }
+        if (isDirty(documentId)) {
             return new ReplayResult(List.of(), false);
         }
         try {
@@ -125,6 +131,32 @@ public class RedisDocumentRealtimeRecentUpdateCache implements DocumentRealtimeR
 
     private String key(Long documentId) {
         return "doc:" + documentId + ":recent_updates";
+    }
+
+    private String dirtyKey(Long documentId) {
+        return key(documentId) + ":dirty";
+    }
+
+    private void markDirty(Long documentId, Integer failedRevision) {
+        try {
+            ValueOperations<String, String> valueOps = redisTemplate.opsForValue();
+            valueOps.set(dirtyKey(documentId), String.valueOf(failedRevision), ttl);
+        } catch (Exception markerEx) {
+            log.warn("recent update cache dirty marker set failed, docId={}, revision={}",
+                    documentId,
+                    failedRevision,
+                    markerEx);
+        }
+    }
+
+    private boolean isDirty(Long documentId) {
+        try {
+            String marker = redisTemplate.opsForValue().get(dirtyKey(documentId));
+            return marker != null && !marker.isBlank();
+        } catch (Exception ex) {
+            log.warn("recent update cache dirty marker read failed, docId={}", documentId, ex);
+            return true;
+        }
     }
 
     record RecentUpdate(

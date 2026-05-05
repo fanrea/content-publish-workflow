@@ -7,15 +7,16 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.ListOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -25,14 +26,18 @@ class RedisDocumentRealtimeRecentUpdateCacheTest {
     private StringRedisTemplate redisTemplate;
     @SuppressWarnings("unchecked")
     private ListOperations<String, String> listOperations;
+    @SuppressWarnings("unchecked")
+    private ValueOperations<String, String> valueOperations;
     private ObjectMapper objectMapper;
 
     @BeforeEach
     void setUp() {
         redisTemplate = mock(StringRedisTemplate.class);
         listOperations = (ListOperations<String, String>) mock(ListOperations.class);
+        valueOperations = (ValueOperations<String, String>) mock(ValueOperations.class);
         objectMapper = new ObjectMapper().findAndRegisterModules();
         when(redisTemplate.opsForList()).thenReturn(listOperations);
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
     }
 
     @Test
@@ -97,6 +102,30 @@ class RedisDocumentRealtimeRecentUpdateCacheTest {
         verify(listOperations, times(1)).rightPush(eq("doc:100:recent_updates"), org.mockito.ArgumentMatchers.anyString());
         verify(listOperations, times(1)).trim("doc:100:recent_updates", -200L, -1L);
         verify(redisTemplate, times(1)).expire(eq("doc:100:recent_updates"), eq(Duration.ofSeconds(120)));
+    }
+
+    @Test
+    void append_shouldMarkDirtyWhenRedisWriteFails_andReplayShouldDegrade() {
+        RedisDocumentRealtimeRecentUpdateCache cache = new RedisDocumentRealtimeRecentUpdateCache(
+                redisTemplate,
+                objectMapper,
+                200,
+                Duration.ofSeconds(120),
+                true
+        );
+        DocumentOperation operation = op(100L, 7, 6);
+        when(listOperations.rightPush(eq("doc:100:recent_updates"), org.mockito.ArgumentMatchers.anyString()))
+                .thenThrow(new RuntimeException("redis timeout"));
+        when(valueOperations.get("doc:100:recent_updates:dirty")).thenReturn("7");
+
+        cache.append(operation);
+        DocumentRealtimeRecentUpdateCache.ReplayResult result = cache.replaySince(100L, 6, 200);
+
+        verify(valueOperations, times(1))
+                .set(eq("doc:100:recent_updates:dirty"), eq("7"), eq(Duration.ofSeconds(120)));
+        verify(listOperations, never()).range(eq("doc:100:recent_updates"), eq(0L), eq(199L));
+        assertThat(result.completeFromBase()).isFalse();
+        assertThat(result.operations()).isEmpty();
     }
 
     private String toPayload(DocumentOperation operation) throws Exception {

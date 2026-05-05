@@ -80,7 +80,7 @@ class RocketMqDocumentCompactionTaskPublisherTest {
     }
 
     @Test
-    void publish_shouldFailWhenProducerNotStarted() {
+    void publish_shouldFailWhenProducerNotStarted() throws Exception {
         ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
         DefaultMQProducer producer = mock(DefaultMQProducer.class);
         RocketMqDocumentCompactionTaskPublisher publisher =

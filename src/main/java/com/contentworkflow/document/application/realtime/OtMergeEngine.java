@@ -33,9 +33,20 @@ public class OtMergeEngine implements MergeEngine {
         }
 
         return switch (op.getOpType()) {
-            case INSERT -> content.substring(0, position) + text + content.substring(position);
-            case DELETE -> content.substring(0, position) + content.substring(position + length);
-            case REPLACE -> content.substring(0, position) + text + content.substring(position + length);
+            case INSERT -> new StringBuilder(textLength + text.length())
+                    .append(content, 0, position)
+                    .append(text)
+                    .append(content, position, textLength)
+                    .toString();
+            case DELETE -> new StringBuilder(Math.max(0, textLength - length))
+                    .append(content, 0, position)
+                    .append(content, position + length, textLength)
+                    .toString();
+            case REPLACE -> new StringBuilder(Math.max(0, textLength - length + text.length()))
+                    .append(content, 0, position)
+                    .append(text)
+                    .append(content, position + length, textLength)
+                    .toString();
         };
     }
 

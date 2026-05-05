@@ -32,6 +32,7 @@ public class DocumentActorCollaborationEngine implements CollaborationEngine, Di
     private final DocumentOperationService documentOperationService;
     private final DocumentRealtimePushService pushService;
     private final List<ExecutorService> shardExecutors;
+    private final List<ExecutorService> pushShardExecutors;
 
     public DocumentActorCollaborationEngine(DocumentOperationService documentOperationService,
                                             DocumentRealtimePushService pushService) {
@@ -49,6 +50,9 @@ public class DocumentActorCollaborationEngine implements CollaborationEngine, Di
         this.shardExecutors = IntStream.range(0, shardCount)
                 .mapToObj(this::newSingleThreadShardExecutor)
                 .toList();
+        this.pushShardExecutors = IntStream.range(0, shardCount)
+                .mapToObj(this::newSingleThreadPushExecutor)
+                .toList();
     }
 
     @Override
@@ -60,19 +64,8 @@ public class DocumentActorCollaborationEngine implements CollaborationEngine, Di
 
     @Override
     public void destroy() {
-        for (ExecutorService shardExecutor : shardExecutors) {
-            shardExecutor.shutdown();
-        }
-        for (ExecutorService shardExecutor : shardExecutors) {
-            try {
-                if (!shardExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                    shardExecutor.shutdownNow();
-                }
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                shardExecutor.shutdownNow();
-            }
-        }
+        shutdownExecutors(shardExecutors);
+        shutdownExecutors(pushShardExecutors);
     }
 
     private void applyAndPush(DocumentOperationIngressCommand command) {
@@ -94,7 +87,7 @@ public class DocumentActorCollaborationEngine implements CollaborationEngine, Di
             );
             DocumentOperation operation = result.operation();
             if (!result.duplicated() && operation != null) {
-                pushService.broadcastOperationApplied(operation);
+                enqueuePush(command.docId(), operation);
             }
         } catch (Exception ex) {
             log.error("collaboration engine command failed, docId={}, clientSeq={}",
@@ -104,9 +97,27 @@ public class DocumentActorCollaborationEngine implements CollaborationEngine, Di
         }
     }
 
+    private void enqueuePush(Long documentId, DocumentOperation operation) {
+        pushShardExecutor(documentId).execute(() -> {
+            try {
+                pushService.broadcastOperationApplied(operation);
+            } catch (Exception ex) {
+                log.warn("collaboration engine async push failed, docId={}, operationId={}",
+                        documentId,
+                        operation.getId(),
+                        ex);
+            }
+        });
+    }
+
     private ExecutorService shardExecutor(Long documentId) {
         int shardIndex = resolveShardIndex(documentId, shardExecutors.size());
         return shardExecutors.get(shardIndex);
+    }
+
+    private ExecutorService pushShardExecutor(Long documentId) {
+        int shardIndex = resolveShardIndex(documentId, pushShardExecutors.size());
+        return pushShardExecutors.get(shardIndex);
     }
 
     static int resolveShardIndex(Long documentId, int shardCount) {
@@ -124,5 +135,30 @@ public class DocumentActorCollaborationEngine implements CollaborationEngine, Di
             return thread;
         };
         return Executors.newSingleThreadExecutor(threadFactory);
+    }
+
+    private ExecutorService newSingleThreadPushExecutor(int shardId) {
+        ThreadFactory threadFactory = runnable -> {
+            Thread thread = new Thread(runnable, "doc-push-shard-" + shardId);
+            thread.setDaemon(true);
+            return thread;
+        };
+        return Executors.newSingleThreadExecutor(threadFactory);
+    }
+
+    private void shutdownExecutors(List<ExecutorService> executors) {
+        for (ExecutorService executor : executors) {
+            executor.shutdown();
+        }
+        for (ExecutorService executor : executors) {
+            try {
+                if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    executor.shutdownNow();
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                executor.shutdownNow();
+            }
+        }
     }
 }

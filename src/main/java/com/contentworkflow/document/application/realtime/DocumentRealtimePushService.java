@@ -19,7 +19,10 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.io.IOException;
+import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 文档实时推送服务（供 HTTP 业务触发 WebSocket 广播）。
@@ -28,6 +31,9 @@ import java.util.List;
 public class DocumentRealtimePushService {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentRealtimePushService.class);
+    private static final String REVISION_BY_DOC_SESSION_KEY = "realtime:revision:by-doc";
+    private static final String GAP_INSTRUCTION_BY_DOC_SESSION_KEY = "realtime:pull-required:by-doc";
+    private static final String INSTRUCTION_TYPE_PULL_UPDATES_REQUIRED = "PULL_UPDATES_REQUIRED";
 
     private final DocumentRealtimeSessionRegistry sessionRegistry;
     private final DocumentRealtimeRecentUpdateCache recentUpdateCache;
@@ -137,7 +143,7 @@ public class DocumentRealtimePushService {
                     ex);
         }
         tryScheduleTombstoneGc(operation);
-        broadcast(operation.getDocumentId(), DocumentWsEvent.applied(
+        DocumentWsEvent appliedEvent = DocumentWsEvent.applied(
                 operation.getDocumentId(),
                 operation.getId(),
                 operation.getRevisionNo(),
@@ -145,7 +151,8 @@ public class DocumentRealtimePushService {
                 operation.getEditorId(),
                 operation.getEditorName(),
                 toWsOperation(operation)
-        ), true);
+        );
+        broadcastOperationWithGapCompensation(operation, appliedEvent);
     }
 
     /**
@@ -172,6 +179,59 @@ public class DocumentRealtimePushService {
         }
         if (publishCrossGateway) {
             publishCrossGateway(event);
+        }
+    }
+
+    private void broadcastOperationWithGapCompensation(DocumentOperation operation, DocumentWsEvent appliedEvent) {
+        Long documentId = operation.getDocumentId();
+        if (documentId == null) {
+            return;
+        }
+        for (WebSocketSession session : sessionRegistry.sessionsOf(documentId)) {
+            sendAppliedWithGapCompensation(session, operation, appliedEvent);
+        }
+        publishCrossGateway(appliedEvent);
+    }
+
+    private void sendAppliedWithGapCompensation(WebSocketSession session,
+                                                DocumentOperation operation,
+                                                DocumentWsEvent appliedEvent) {
+        WebSocketSession target = sessionRegistry.resolveSendSession(session);
+        if (target == null || !target.isOpen()) {
+            return;
+        }
+
+        Long documentId = operation.getDocumentId();
+        Integer expectedBaseRevision = trackedRevision(target, documentId);
+        Integer incomingBaseRevision = operation.getBaseRevision();
+        Integer incomingRevision = operation.getRevisionNo();
+
+        if (expectedBaseRevision != null
+                && incomingRevision != null
+                && incomingRevision <= expectedBaseRevision) {
+            return;
+        }
+
+        if (expectedBaseRevision != null
+                && incomingBaseRevision != null
+                && incomingBaseRevision > 0
+                && !incomingBaseRevision.equals(expectedBaseRevision)) {
+            if (!alreadyInstructedForGap(target, documentId, incomingRevision)) {
+                sendSafe(target, pullUpdatesRequiredInstruction(
+                        documentId,
+                        expectedBaseRevision,
+                        incomingBaseRevision,
+                        incomingRevision
+                ));
+                rememberGapInstruction(target, documentId, incomingRevision);
+            }
+            return;
+        }
+
+        sendSafe(target, appliedEvent);
+        if (incomingRevision != null && incomingRevision > 0) {
+            rememberRevision(target, documentId, incomingRevision);
+            clearGapInstruction(target, documentId);
         }
     }
 
@@ -267,6 +327,108 @@ public class DocumentRealtimePushService {
         Integer baseRevision = operation.getBaseRevision();
         if (baseRevision != null && baseRevision > 0) {
             return baseRevision.longValue();
+        }
+        return null;
+    }
+
+    private DocumentWsEvent pullUpdatesRequiredInstruction(Long documentId,
+                                                           Integer expectedBaseRevision,
+                                                           Integer incomingBaseRevision,
+                                                           Integer incomingRevision) {
+        return new DocumentWsEvent(
+                INSTRUCTION_TYPE_PULL_UPDATES_REQUIRED,
+                "revision_gap_detected: expectedBaseRevision=" + expectedBaseRevision
+                        + ", incomingBaseRevision=" + incomingBaseRevision
+                        + ", incomingRevision=" + incomingRevision,
+                documentId,
+                null,
+                null,
+                null,
+                expectedBaseRevision,
+                incomingRevision,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                List.of(),
+                LocalDateTime.now()
+        );
+    }
+
+    private Integer trackedRevision(WebSocketSession session, Long documentId) {
+        Map<Long, Integer> revisionByDoc = sessionLongIntMap(session, REVISION_BY_DOC_SESSION_KEY, false);
+        if (revisionByDoc == null || documentId == null) {
+            return null;
+        }
+        return revisionByDoc.get(documentId);
+    }
+
+    private void rememberRevision(WebSocketSession session, Long documentId, Integer revision) {
+        if (documentId == null || revision == null) {
+            return;
+        }
+        Map<Long, Integer> revisionByDoc = sessionLongIntMap(session, REVISION_BY_DOC_SESSION_KEY, true);
+        if (revisionByDoc == null) {
+            return;
+        }
+        revisionByDoc.merge(documentId, revision, Math::max);
+    }
+
+    private boolean alreadyInstructedForGap(WebSocketSession session, Long documentId, Integer incomingRevision) {
+        Map<Long, Integer> instructionByDoc = sessionLongIntMap(session, GAP_INSTRUCTION_BY_DOC_SESSION_KEY, false);
+        if (instructionByDoc == null || documentId == null || incomingRevision == null) {
+            return false;
+        }
+        Integer instructedRevision = instructionByDoc.get(documentId);
+        return instructedRevision != null && instructedRevision >= incomingRevision;
+    }
+
+    private void rememberGapInstruction(WebSocketSession session, Long documentId, Integer incomingRevision) {
+        if (documentId == null || incomingRevision == null) {
+            return;
+        }
+        Map<Long, Integer> instructionByDoc = sessionLongIntMap(session, GAP_INSTRUCTION_BY_DOC_SESSION_KEY, true);
+        if (instructionByDoc == null) {
+            return;
+        }
+        instructionByDoc.merge(documentId, incomingRevision, Math::max);
+    }
+
+    private void clearGapInstruction(WebSocketSession session, Long documentId) {
+        Map<Long, Integer> instructionByDoc = sessionLongIntMap(session, GAP_INSTRUCTION_BY_DOC_SESSION_KEY, false);
+        if (instructionByDoc == null || documentId == null) {
+            return;
+        }
+        instructionByDoc.remove(documentId);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<Long, Integer> sessionLongIntMap(WebSocketSession session, String key, boolean createIfMissing) {
+        if (session == null || key == null || key.isBlank()) {
+            return null;
+        }
+        Map<String, Object> attributes = session.getAttributes();
+        if (attributes == null) {
+            return null;
+        }
+        Object existing = attributes.get(key);
+        if (existing instanceof Map<?, ?> existingMap) {
+            return (Map<Long, Integer>) existingMap;
+        }
+        if (!createIfMissing) {
+            return null;
+        }
+        Map<Long, Integer> created = new ConcurrentHashMap<>();
+        Object previous = attributes.putIfAbsent(key, created);
+        if (previous == null) {
+            return created;
+        }
+        if (previous instanceof Map<?, ?> previousMap) {
+            return (Map<Long, Integer>) previousMap;
         }
         return null;
     }

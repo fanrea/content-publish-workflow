@@ -38,6 +38,8 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
     private static final int MAX_DELTA_BATCH_ID_LENGTH = 128;
     private static final String DELTA_BATCH_SESSION_PREFIX = "delta-batch:";
     private static final String PRESENCE_NAMES_SESSION_KEY = "realtime:presence:names";
+    private static final String REVISION_BY_DOC_SESSION_KEY = "realtime:revision:by-doc";
+    private static final String GAP_INSTRUCTION_BY_DOC_SESSION_KEY = "realtime:pull-required:by-doc";
 
     private final ObjectMapper objectMapper;
     private final DocumentOperationIngressPublisher ingressPublisher;
@@ -95,6 +97,7 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         clearAllTrackedPresenceNames(session);
+        clearAllTrackedRevisionState(session);
         List<Long> affectedDocs = sessionRegistry.removeSession(session.getId());
         List<Long> affectedPresenceDocs = presenceService.removeSession(session.getId());
         for (Long docId : affectedDocs) {
@@ -134,6 +137,7 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
                     joinDecision.title(),
                     joinDecision.content()
             ));
+            rememberRevision(session, docId, joinDecision.revision());
         } else if (joinDecision.requiresInstruction()) {
             sendSafe(session, instructionEvent(
                     joinDecision.instructionType(),
@@ -157,6 +161,7 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
         sessionRegistry.unbind(docId, session.getId());
         List<String> participants = presenceService.leave(docId, session.getId());
         clearTrackedPresenceName(session, docId);
+        clearTrackedRevisionState(session, docId);
         if (!participantsBefore.equals(participants)) {
             broadcast(docId, DocumentWsEvent.presence(docId, participants, "participant left"), null);
         }
@@ -177,7 +182,9 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
 
         sessionRegistry.bind(docId, session);
         joinPresenceIfNeeded(docId, session, normalizedEditorName);
-        presenceService.upsertSessionClock(docId, session.getId(), normalizedClientClock);
+        if (normalizedClientClock != null) {
+            presenceService.upsertSessionClock(docId, session.getId(), normalizedClientClock);
+        }
 
         DocumentOperationIngressCommand ingressCommand = new DocumentOperationIngressCommand(
                 docId,
@@ -248,6 +255,7 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
                     operation.getEditorName(),
                     toOperationView(operation)
             ));
+            rememberRevision(session, docId, operation.getRevisionNo());
         }
 
         sendSafe(session, DocumentWsEvent.syncDone(
@@ -256,6 +264,7 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
                 latestRevision,
                 operations.size()
         ));
+        rememberRevision(session, docId, latestRevision);
     }
 
     /**
@@ -295,6 +304,7 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
                     decision.title(),
                     decision.content()
             ));
+            rememberRevision(session, docId, decision.latestRevision());
             return;
         }
         if (decision.requiresInstruction()) {
@@ -516,11 +526,48 @@ public class DocumentRealtimeWebSocketHandler extends TextWebSocketHandler {
         session.getAttributes().remove(PRESENCE_NAMES_SESSION_KEY);
     }
 
+    private void rememberRevision(WebSocketSession session, Long docId, Integer revision) {
+        if (docId == null || docId <= 0 || revision == null || revision < 0) {
+            return;
+        }
+        trackedRevisionsByDoc(session).merge(docId, revision, Math::max);
+        trackedGapInstructionsByDoc(session).remove(docId);
+    }
+
+    private void clearTrackedRevisionState(WebSocketSession session, Long docId) {
+        if (docId == null || docId <= 0) {
+            return;
+        }
+        trackedRevisionsByDoc(session).remove(docId);
+        trackedGapInstructionsByDoc(session).remove(docId);
+    }
+
+    private void clearAllTrackedRevisionState(WebSocketSession session) {
+        session.getAttributes().remove(REVISION_BY_DOC_SESSION_KEY);
+        session.getAttributes().remove(GAP_INSTRUCTION_BY_DOC_SESSION_KEY);
+    }
+
     @SuppressWarnings("unchecked")
     private Map<Long, String> trackedPresenceNames(WebSocketSession session) {
         return (Map<Long, String>) session.getAttributes().computeIfAbsent(
                 PRESENCE_NAMES_SESSION_KEY,
                 key -> new ConcurrentHashMap<Long, String>()
+        );
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<Long, Integer> trackedRevisionsByDoc(WebSocketSession session) {
+        return (Map<Long, Integer>) session.getAttributes().computeIfAbsent(
+                REVISION_BY_DOC_SESSION_KEY,
+                key -> new ConcurrentHashMap<Long, Integer>()
+        );
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<Long, Integer> trackedGapInstructionsByDoc(WebSocketSession session) {
+        return (Map<Long, Integer>) session.getAttributes().computeIfAbsent(
+                GAP_INSTRUCTION_BY_DOC_SESSION_KEY,
+                key -> new ConcurrentHashMap<Long, Integer>()
         );
     }
 

@@ -568,6 +568,75 @@ class DocumentRealtimeWebSocketHandlerTest {
     }
 
     @Test
+    void handleSync_shouldTriggerPullInstructionWhenSubsequentAppliedRevisionHasGap() throws Exception {
+        DocumentOperationIngressPublisher localIngressPublisher = mock(DocumentOperationIngressPublisher.class);
+        DocumentRealtimeGatewayFacade localGatewayFacade = mock(DocumentRealtimeGatewayFacade.class);
+        DocumentRealtimeRedisIndex redisIndex = new NoopDocumentRealtimeRedisIndex();
+        DocumentRealtimeSessionRegistry localSessionRegistry = new DocumentRealtimeSessionRegistry(redisIndex);
+        DocumentRealtimePresenceService localPresenceService = new DocumentRealtimePresenceService(redisIndex);
+        DocumentRealtimeWebSocketHandler localHandler = new DocumentRealtimeWebSocketHandler(
+                objectMapper,
+                localIngressPublisher,
+                new NoopDocumentRealtimeCrossGatewayBroadcaster(),
+                localGatewayFacade,
+                localPresenceService,
+                localSessionRegistry
+        );
+        DocumentRealtimeRecentUpdateCache recentUpdateCache = new NoopDocumentRealtimeRecentUpdateCache();
+        DocumentRealtimePushService pushService = new DocumentRealtimePushService(
+                localSessionRegistry,
+                recentUpdateCache,
+                new NoopDocumentRealtimeCrossGatewayBroadcaster(),
+                new CompactionPolicyEvaluator(200, 1.5d, Duration.ofMinutes(10), Duration.ofSeconds(30)),
+                new NoopDocumentCompactionTaskPublisher(),
+                objectMapper
+        );
+
+        WebSocketSession localSession = mock(WebSocketSession.class);
+        when(localSession.getId()).thenReturn("ws-sync-gap-1");
+        when(localSession.isOpen()).thenReturn(true);
+        when(localSession.getAttributes()).thenReturn(new ConcurrentHashMap<>());
+        when(localGatewayFacade.prepareSync(100L, "u-1", 5, 200)).thenReturn(
+                DocumentRealtimeGatewayFacade.SyncDecision.replay(List.of(), 5)
+        );
+
+        String syncPayload = """
+                {
+                  "type":"SYNC_OPS",
+                  "docId":100,
+                  "baseRevision":5,
+                  "editorId":"u-1",
+                  "editorName":"alice"
+                }
+                """;
+        localHandler.handleTextMessage(localSession, new TextMessage(syncPayload));
+
+        DocumentOperation remoteOp = DocumentOperation.builder()
+                .id(2007L)
+                .documentId(100L)
+                .revisionNo(7)
+                .baseRevision(6)
+                .editorId("u-2")
+                .editorName("bob")
+                .opType(DocumentOpType.INSERT)
+                .opPosition(0)
+                .opLength(0)
+                .opText("z")
+                .createdAt(LocalDateTime.now())
+                .build();
+        pushService.broadcastOperationApplied(remoteOp);
+
+        ArgumentCaptor<TextMessage> outbound = ArgumentCaptor.forClass(TextMessage.class);
+        verify(localSession, times(2)).sendMessage(outbound.capture());
+        DocumentWsEvent syncDone = objectMapper.readValue(outbound.getAllValues().get(0).getPayload(), DocumentWsEvent.class);
+        DocumentWsEvent instruction = objectMapper.readValue(outbound.getAllValues().get(1).getPayload(), DocumentWsEvent.class);
+        assertThat(syncDone.type()).isEqualTo("SYNC_DONE");
+        assertThat(instruction.type()).isEqualTo("PULL_UPDATES_REQUIRED");
+        assertThat(instruction.baseRevision()).isEqualTo(5);
+        assertThat(instruction.latestRevision()).isEqualTo(7);
+    }
+
+    @Test
     void handleJoin_shouldReturnInstructionWhenFacadeCannotProvideSnapshot() throws Exception {
         when(gatewayFacade.prepareJoin(100L, "u-1")).thenReturn(
                 DocumentRealtimeGatewayFacade.JoinDecision.instruction(

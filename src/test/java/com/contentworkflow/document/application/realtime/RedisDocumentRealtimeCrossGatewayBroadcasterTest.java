@@ -118,9 +118,9 @@ class RedisDocumentRealtimeCrossGatewayBroadcasterTest {
 
         broadcaster.publish(event);
 
-        verify(redisTemplate, times(1)).convertAndSend("cpw:realtime:broadcast:gw-2", org.mockito.ArgumentMatchers.anyString());
-        verify(redisTemplate, times(1)).convertAndSend("cpw:realtime:broadcast:gw-3", org.mockito.ArgumentMatchers.anyString());
-        verify(redisTemplate, never()).convertAndSend("cpw:realtime:broadcast:gw-1", org.mockito.ArgumentMatchers.anyString());
+        verify(redisTemplate, times(1)).convertAndSend(org.mockito.ArgumentMatchers.eq("cpw:realtime:broadcast:gw-2"), org.mockito.ArgumentMatchers.anyString());
+        verify(redisTemplate, times(1)).convertAndSend(org.mockito.ArgumentMatchers.eq("cpw:realtime:broadcast:gw-3"), org.mockito.ArgumentMatchers.anyString());
+        verify(redisTemplate, never()).convertAndSend(org.mockito.ArgumentMatchers.eq("cpw:realtime:broadcast:gw-1"), org.mockito.ArgumentMatchers.anyString());
     }
 
     @Test
@@ -186,7 +186,7 @@ class RedisDocumentRealtimeCrossGatewayBroadcasterTest {
         when(localSession.isOpen()).thenReturn(true);
         when(localSession.getAttributes()).thenReturn(new ConcurrentHashMap<>());
 
-        handler.handleTextMessage(localSession, new TextMessage("""
+        handler.handleMessage(localSession, new TextMessage("""
                 {
                   "type":"SYNC_OPS",
                   "docId":100,
@@ -261,7 +261,7 @@ class RedisDocumentRealtimeCrossGatewayBroadcasterTest {
         when(localSession.isOpen()).thenReturn(true);
         when(localSession.getAttributes()).thenReturn(new ConcurrentHashMap<>());
 
-        handler.handleTextMessage(localSession, new TextMessage("""
+        handler.handleMessage(localSession, new TextMessage("""
                 {
                   "type":"JOIN",
                   "docId":100,

@@ -28,8 +28,8 @@ import static org.mockito.Mockito.when;
 class RocketMqDocumentOperationIngressPublisherTest {
 
     @Test
-    void publish_shouldFailFastWhenProducerNotStarted() {
-        ObjectMapper objectMapper = new ObjectMapper();
+    void publish_shouldFailFastWhenProducerNotStarted() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
         DefaultMQProducer producer = mock(DefaultMQProducer.class);
         RocketMqDocumentOperationIngressPublisher publisher =
                 new RocketMqDocumentOperationIngressPublisher(objectMapper, producer, "cpw_doc_ingress", 0, 0);
@@ -43,7 +43,7 @@ class RocketMqDocumentOperationIngressPublisherTest {
 
     @Test
     void publish_shouldRejectNullCommand() {
-        ObjectMapper objectMapper = new ObjectMapper();
+        ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
         DefaultMQProducer producer = mock(DefaultMQProducer.class);
         RocketMqDocumentOperationIngressPublisher publisher =
                 new RocketMqDocumentOperationIngressPublisher(objectMapper, producer, "cpw_doc_ingress", 0, 0);
@@ -55,7 +55,7 @@ class RocketMqDocumentOperationIngressPublisherTest {
 
     @Test
     void publish_shouldRejectNullDocId() throws Exception {
-        ObjectMapper objectMapper = new ObjectMapper();
+        ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
         DefaultMQProducer producer = mock(DefaultMQProducer.class);
         when(producer.getNamesrvAddr()).thenReturn("127.0.0.1:9876");
         RocketMqDocumentOperationIngressPublisher publisher =
@@ -69,7 +69,7 @@ class RocketMqDocumentOperationIngressPublisherTest {
 
     @Test
     void publish_shouldRouteByDocIdToStableQueue() throws Exception {
-        ObjectMapper objectMapper = new ObjectMapper();
+        ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
         DefaultMQProducer producer = mock(DefaultMQProducer.class);
         SendResult sendResult = mock(SendResult.class);
         when(sendResult.getSendStatus()).thenReturn(SendStatus.SEND_OK);
@@ -105,7 +105,7 @@ class RocketMqDocumentOperationIngressPublisherTest {
 
     @Test
     void publish_shouldKeepRetryAndThrowWhenSendFails() throws Exception {
-        ObjectMapper objectMapper = new ObjectMapper();
+        ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
         DefaultMQProducer producer = mock(DefaultMQProducer.class);
         when(producer.getNamesrvAddr()).thenReturn("127.0.0.1:9876");
         when(producer.send(any(Message.class), any(MessageQueueSelector.class), any()))
