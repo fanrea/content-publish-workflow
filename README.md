@@ -1,186 +1,66 @@
 # 协同文档编辑系统（Collaborative Document Service）
 
-> 仓库名与 Java 包名保留历史命名（`content-publish-workflow` / `com.contentworkflow`），当前业务定位已统一为“协同文档编辑系统”。
+本项目是协同文档编辑后端，技术栈：Spring Boot + MyBatis-Plus + MySQL + Redis + RocketMQ + WebSocket。
 
-## 系统定位
+## 概念口径（统一）
 
-本项目是一个面向多人协作场景的文档后端服务，目标是提供可落地、可扩展、可追问的一致性写入链路，而不是只做基础 CRUD。
+本仓库的并发编辑模型统一定义为：
 
-当前重点覆盖四类能力：
+- **Server-Ordered CRDT-like Merge Engine**
+- 中文表述：**服务端有序写入模型 + CRDT-style 字符 ID 重定位**
 
-- 实时协作编辑：基于原生 WebSocket（`/ws/docs`）承载编辑操作、增量同步、光标广播、在线成员。
-- 评论协作：评论、回复、解决/重开、删除，以及编辑过程中锚点迁移。
-- 成员权限：`owner / editor / viewer` 角色模型，控制读写、恢复、成员管理等权限。
-- 事件扩展：通过 `DocumentEventPublisher` 抽象支持事件发布，默认可降级为空实现，可按配置接入 RocketMQ。
+说明：
 
-## 业务边界
+- 配置项里可能仍出现 `merge mode = crdt`。
+- 这里的 `crdt` 表示“CRDT-like 的服务端合并策略”，**不是完整端侧 CRDT**。
+- 全局一致性由服务端顺序日志与确定性合并规则保证，而非客户端各自独立收敛。
 
-范围内（本项目负责）：
+详细规则见：[docs/SERVER_ORDERED_MERGE.md](docs/SERVER_ORDERED_MERGE.md)
 
-- 协同文档的写入一致性与并发控制
-- 协作态同步（增量操作追赶、在线态广播）
-- 评论与成员权限协作
-- 事务提交后事件发布（扩展集成点）
+## 协同状态机（JOIN/SYNC）
 
-范围外（本项目当前不负责）：
+客户端建议按以下状态机实现：
 
-- “内容审核/发布/下线/回滚”式发布工作流业务
-- 搜索索引、推荐、计费等下游业务系统
-- 完整企业认证中心（当前演示通过 `X-Editor-Id` / `X-Editor-Name` 识别操作者）
+`INIT -> JOINING -> SNAPSHOT_READY -> EDITING -> GAP_DETECTED -> SYNCING -> EDITING`
 
-## 架构与一致性
+关键语义：
 
-架构说明与可追问不变量见：
+- `JOIN` 返回 `snapshotRevision` 与 `latestRevision`。
+- `EDIT_OP` 的 `acceptedAck` 仅表示入口已接收，不代表进入全局顺序。
+- 只有收到 `OP_APPLIED` 才表示该操作已进入服务端顺序并生效。
+- `SYNC_DONE` 返回 `latestRevision`，客户端据此更新本地水位。
+- 过旧 `baseRevision` 由服务端返回 `REBASE_REQUIRED` 或 `SNAPSHOT_REQUIRED`。
+
+## 一致性与回放链路
+
+- Redis 广播定位是弱实时 fanout，不作为最终一致性来源。
+- 最终一致性依赖 `lastAppliedRevision + SYNC_OPS`。
+- `SYNC_OPS` 查询顺序：
+1. 先查 Redis recent ops 热窗口。
+2. miss 后查 operation log。
+
+## 存储与生产口径
+
+- filesystem operation log 仅用于 local/dev adapter。
+- 生产口径应为：
+1. MySQL 元数据（文档、revision、幂等键等）
+2. RocketMQ 顺序日志（入口与消费顺序化）
+3. Redis 热窗口（recent ops / fanout）
+4. OSS/MinIO snapshot（冷恢复与历史回放加速）
+- operation log 在生产可落 MySQL 分表或对象存储分段文件。
+
+更多见：[docs/storage-snapshot-roadmap.md](docs/storage-snapshot-roadmap.md)
+
+## 中间件口径
+
+- 当前主链路是 RocketMQ ingress + 顺序消费 + 幂等写入。
+- RabbitMQ/outbox 不是当前主链路，不作为本仓库默认叙述。
+- 简历/项目介绍建议口径：**RocketMQ 顺序消息 + DB 唯一键幂等 + operation log 可重放补偿**。
+
+## 文档索引
 
 - [docs/architecture-collab.md](docs/architecture-collab.md)
+- [docs/SERVER_ORDERED_MERGE.md](docs/SERVER_ORDERED_MERGE.md)
+- [docs/STAGE2_REALTIME_LOCAL.md](docs/STAGE2_REALTIME_LOCAL.md)
+- [docs/INGRESS_ROCKETMQ_LOCAL.md](docs/INGRESS_ROCKETMQ_LOCAL.md)
 - [docs/storage-snapshot-roadmap.md](docs/storage-snapshot-roadmap.md)
-
-该文档包含：
-
-- 文本架构图（ASCII）
-- 3 条系统不变量（版本单调、操作幂等、最终收敛）
-- HTTP/WS 统一写路径的目标态语义
-
-## 当前能力清单
-
-HTTP（前缀：`/api/docs`）：
-
-- 文档：创建、列表、详情、整篇更新、版本列表、版本恢复
-- 写路径：`PUT /api/docs/{documentId}` 已统一走 operation pipeline（`applyFullReplaceOperation -> applyOperation`）
-- 恢复路径：`POST /api/docs/{documentId}/restore` 已统一走 operation pipeline（owner 校验 + `changeType=RESTORE`）
-- 操作：按 revision 增量查询操作（重连追赶）
-- 评论：评论增删改状态、评论回复、评论统计
-- 成员：成员列表、owner 设置成员角色
-
-WebSocket（端点：`/ws/docs`）：
-
-- `JOIN` / `LEAVE`
-- `EDIT_OP`（操作写入 + ACK/APPLIED）
-- `SYNC_OPS`（断线重连增量追赶）
-- `CURSOR_MOVE`
-
-## 核心技术栈
-
-- Java 17
-- Spring Boot 3.2.5
-- MyBatis-Plus + MyBatis XML
-- MySQL + Flyway
-- Spring WebSocket（原生协议）
-- Redis（可选缓存扩展）
-- RocketMQ（可选事件扩展）
-- H2（测试）
-
-## 快速启动
-
-1. 启动基础依赖（MySQL、Redis）：
-
-```bash
-docker compose -f compose.local.yml up -d mysql redis
-```
-
-2. 如需验证 `EDIT_OP -> RocketMQ ingress`，再启动 RocketMQ（namesrv + broker）：
-
-```bash
-docker compose -f compose.local.yml --profile rocketmq up -d rocketmq-namesrv rocketmq-broker
-```
-
-3. 启动服务：
-
-```bash
-mvn spring-boot:run
-```
-
-4. 最小联调入口：
-
-- HTTP：`http://localhost:8080/api/docs`
-- WebSocket：`ws://localhost:8080/ws/docs`
-
-### 启用 ingress RocketMQ（可选）
-
-默认 `workflow.ingress.rocketmq.enabled=false`。本地开启时至少设置：
-
-```powershell
-$env:DOC_INGRESS_ROCKETMQ_ENABLED="true"
-$env:INGRESS_ROCKETMQ_NAME_SERVER="127.0.0.1:9876"
-mvn spring-boot:run
-```
-
-可用这个命令快速确认开关是否生效：
-
-```powershell
-Get-ChildItem Env:DOC_INGRESS_ROCKETMQ_ENABLED,Env:INGRESS_ROCKETMQ_NAME_SERVER
-```
-
-补充说明见：[docs/INGRESS_ROCKETMQ_LOCAL.md](docs/INGRESS_ROCKETMQ_LOCAL.md)
-
-## 第2阶段本地验证（JOIN / EDIT_OP / SYNC_OPS）
-
-第2阶段联调建议先显式打开 realtime 配置（当前版本主要用于路由/热态能力预埋）：
-
-```powershell
-$env:DOC_REALTIME_REDIS_INDEX_ENABLED="true"
-$env:DOC_REALTIME_GATEWAY_ID="gateway-local-1"
-$env:DOC_REALTIME_RECENT_UPDATES_ENABLED="true"
-$env:DOC_REALTIME_RECENT_UPDATES_SIZE="200"
-$env:DOC_REALTIME_RECENT_UPDATES_TTL="120s"
-```
-
-然后按下面顺序验证闭环：
-
-1. 通过 HTTP 创建文档，记录 `docId` 与 `latestRevision`：
-
-```bash
-curl -X POST "http://localhost:8080/api/docs" \
-  -H "Content-Type: application/json" \
-  -H "X-Editor-Id: u1" \
-  -H "X-Editor-Name: alice" \
-  -d "{\"docNo\":\"demo-1\",\"title\":\"demo\",\"content\":\"hello\"}"
-```
-
-2. WebSocket 发送 `JOIN`，预期先收到 `SNAPSHOT`，随后收到 `PRESENCE`：
-
-```json
-{"type":"JOIN","docId":<docId>,"editorId":"u1","editorName":"alice"}
-```
-
-3. 发送 `EDIT_OP`，预期立即收到 `ACK(message=accepted_by_ingress)`，随后房间收到 `OP_APPLIED`：
-
-```json
-{
-  "type":"EDIT_OP",
-  "docId":<docId>,
-  "baseRevision":<latestRevision>,
-  "clientSeq":1,
-  "clientSessionId":"ws-client-1",
-  "editorId":"u1",
-  "editorName":"alice",
-  "op":{"opType":"INSERT","position":5,"length":0,"text":" world"}
-}
-```
-
-4. 发送 `SYNC_OPS`（模拟断线重连追赶），预期收到若干 `OP_APPLIED`，最后收到 `SYNC_DONE`：
-
-```json
-{"type":"SYNC_OPS","docId":<docId>,"baseRevision":<staleRevision>,"syncLimit":200,"editorId":"u1","editorName":"alice"}
-```
-
-完整操作脚本与检查点见：[docs/STAGE2_REALTIME_LOCAL.md](docs/STAGE2_REALTIME_LOCAL.md)
-
-## 项目结构（核心）
-
-```text
-src/main/java/com/contentworkflow
-├─ common
-│  └─ websocket
-└─ document
-   ├─ interfaces
-   ├─ application
-   ├─ domain
-   └─ infrastructure
-```
-
-## 面试讲解建议（30 秒版）
-
-可以把项目表述为：
-
-> 这是一个协同文档编辑系统后端，重点解决并发编辑一致性。写入侧采用版本检查 + 幂等键 + OT-lite 重定位；读写协作态通过 WebSocket 增量同步；评论与成员权限围绕同一文档模型演进；事件在事务提交后发布并可扩展到 RocketMQ。当前仓库名保留历史命名，但业务域已统一为协同文档。

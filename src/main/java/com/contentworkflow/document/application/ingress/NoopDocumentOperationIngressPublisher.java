@@ -1,10 +1,10 @@
 package com.contentworkflow.document.application.ingress;
 
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 @Service
-@ConditionalOnMissingBean(DocumentOperationIngressPublisher.class)
+@ConditionalOnProperty(prefix = "workflow.ingress.rocketmq", name = "enabled", havingValue = "false", matchIfMissing = true)
 public class NoopDocumentOperationIngressPublisher implements DocumentOperationIngressPublisher {
 
     @Override

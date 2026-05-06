@@ -1,37 +1,23 @@
 # Stage2 Realtime Local Validation
 
-本指南用于第2阶段闭环联调：`JOIN -> EDIT_OP -> SYNC_OPS`。
+本指南用于本地验证协同闭环：`JOIN -> EDIT_OP -> SYNC_OPS`。
 
-## 1. 新增 realtime 配置项
+## 1. 语义前提
 
-以下配置均在 `src/main/resources/application.yml` 中提供默认值，并支持环境变量覆盖：
+当前模式为 **Server-Ordered CRDT-like Merge Engine**：
 
-- `workflow.realtime.redis-index.enabled`  
-  是否启用 Redis 房间路由/会话索引能力开关（默认：`false`，环境变量：`DOC_REALTIME_REDIS_INDEX_ENABLED`）。
-- `workflow.realtime.gateway-id`  
-  网关逻辑 ID（默认：`gateway-local`，环境变量：`DOC_REALTIME_GATEWAY_ID`）。
-- `workflow.realtime.recent-updates.enabled`  
-  是否启用最近 N 条增量热窗口（默认：`false`，环境变量：`DOC_REALTIME_RECENT_UPDATES_ENABLED`）。
-- `workflow.realtime.recent-updates.size`  
-  热窗口最多缓存条数（默认：`200`，环境变量：`DOC_REALTIME_RECENT_UPDATES_SIZE`）。
-- `workflow.realtime.recent-updates.ttl`  
-  热窗口 TTL（默认：`120s`，环境变量：`DOC_REALTIME_RECENT_UPDATES_TTL`）。
+- `merge mode` 可能配置为 `crdt`，但语义是服务端顺序合并，不是完整端侧 CRDT。
+- `ACK(acceptedAck)` 不等于全局生效。
+- `OP_APPLIED` 才表示进入全局顺序并生效。
 
-## 2. 启动依赖与服务
-
-1. 启动 MySQL / Redis：
+## 2. 启动依赖
 
 ```bash
 docker compose -f compose.local.yml up -d mysql redis
-```
-
-2. 启动 RocketMQ ingress（namesrv + broker）：
-
-```bash
 docker compose -f compose.local.yml --profile rocketmq up -d rocketmq-namesrv rocketmq-broker
 ```
 
-3. 启动应用（PowerShell 示例）：
+## 3. 启动应用
 
 ```powershell
 $env:DOC_INGRESS_ROCKETMQ_ENABLED="true"
@@ -44,72 +30,32 @@ $env:DOC_REALTIME_RECENT_UPDATES_TTL="120s"
 mvn spring-boot:run
 ```
 
-## 3. 闭环验证步骤
+## 4. 验证步骤
 
-### 3.1 创建文档（HTTP）
+1. 创建文档（HTTP），记录 `docId`、`latestRevision`。
+2. 发送 `JOIN`（WS），确认返回 `SNAPSHOT`，并包含 `snapshotRevision/latestRevision`。
+3. 发送 `EDIT_OP`，确认先收到 `ACK(accepted_by_ingress)`，随后收到 `OP_APPLIED`。
+4. 用落后 revision 发送 `SYNC_OPS`，确认收到 0..N 条 `OP_APPLIED`，最后收到 `SYNC_DONE(latestRevision)`。
 
-```bash
-curl -X POST "http://localhost:8080/api/docs" \
-  -H "Content-Type: application/json" \
-  -H "X-Editor-Id: u1" \
-  -H "X-Editor-Name: alice" \
-  -d "{\"docNo\":\"demo-1\",\"title\":\"demo\",\"content\":\"hello\"}"
-```
+## 5. 状态机校验
 
-记录返回 `data.id` 为 `docId`，`data.latestRevision` 为 `latestRevision`。
+客户端状态应可映射为：
 
-### 3.2 JOIN 验证（WebSocket）
+`INIT -> JOINING -> SNAPSHOT_READY -> EDITING -> GAP_DETECTED -> SYNCING -> EDITING`
 
-发送：
+建议检查：
 
-```json
-{"type":"JOIN","docId":<docId>,"editorId":"u1","editorName":"alice"}
-```
+- `GAP_DETECTED` 触发后必须执行 `SYNC_OPS`。
+- 若返回 `REBASE_REQUIRED` 或 `SNAPSHOT_REQUIRED`，应走 rebase/snapshot 回退，不可直接继续本地写入。
 
-检查点：
+## 6. 回放来源校验
 
-1. 收到 `type=SNAPSHOT`，且 `revision` 为当前最新版本。
-2. 收到 `type=PRESENCE`，`message=participant joined`。
+`SYNC_OPS` 服务端查找顺序：
 
-### 3.3 EDIT_OP 验证（WebSocket）
+1. Redis recent ops 热窗口。
+2. miss 后 operation log。
 
-发送：
+因此本地联调可分别验证：
 
-```json
-{
-  "type":"EDIT_OP",
-  "docId":<docId>,
-  "baseRevision":<latestRevision>,
-  "clientSeq":1,
-  "clientSessionId":"ws-client-1",
-  "editorId":"u1",
-  "editorName":"alice",
-  "op":{"opType":"INSERT","position":5,"length":0,"text":" world"}
-}
-```
-
-检查点：
-
-1. 请求提交后立即收到 `type=ACK` 且 `message=accepted_by_ingress`。
-2. 消费完成后，房间会收到 `type=OP_APPLIED`，`revision` 递增。
-
-### 3.4 SYNC_OPS 验证（WebSocket）
-
-发送（`staleRevision` 小于当前最新版本）：
-
-```json
-{"type":"SYNC_OPS","docId":<docId>,"baseRevision":<staleRevision>,"syncLimit":200,"editorId":"u1","editorName":"alice"}
-```
-
-检查点：
-
-1. 先收到 0~N 条 `type=OP_APPLIED`（补发增量）。
-2. 最后收到 `type=SYNC_DONE`，`message` 形如 `replayedOps=<count>`，并带 `latestRevision`。
-
-## 4. 常见问题
-
-- 若 `EDIT_OP` 返回 `ERROR` 且消息为 `failed to publish edit operation ingress command`，先确认：
-  - `DOC_INGRESS_ROCKETMQ_ENABLED=true`
-  - RocketMQ namesrv/broker 已启动
-  - `INGRESS_ROCKETMQ_NAME_SERVER` 地址可达
-- 若 `SYNC_OPS` 无回放，先确认 `baseRevision` 是否确实落后于当前 `latestRevision`。
+- 热窗口命中：短断线追赶。
+- 热窗口 miss：长断线追赶仍可收敛。

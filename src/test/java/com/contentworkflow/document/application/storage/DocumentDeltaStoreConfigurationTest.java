@@ -31,7 +31,10 @@ class DocumentDeltaStoreConfigurationTest {
     void shouldUseMySqlDeltaStoreWhenEnabled() {
         new ApplicationContextRunner()
                 .withUserConfiguration(DeltaStoreConfig.class)
-                .withPropertyValues("workflow.operation-log.backend=mysql")
+                .withPropertyValues(
+                        "workflow.operation-log.backend=mysql",
+                        "workflow.operation-log.mysql-compat-enabled=true"
+                )
                 .run(context -> assertThat(context.getBean(DocumentDeltaStore.class))
                         .isInstanceOf(MySqlDocumentDeltaStore.class));
     }
@@ -56,7 +59,7 @@ class DocumentDeltaStoreConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure())
-                            .hasMessageContaining("unsupported workflow.operation-log.backend=invalid-backend");
+                            .hasRootCauseMessage("unsupported workflow.operation-log.backend=invalid-backend, supported values: mysql, filesystem, noop");
                 });
     }
 

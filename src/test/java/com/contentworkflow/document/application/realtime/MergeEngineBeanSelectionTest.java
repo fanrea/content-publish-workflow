@@ -4,6 +4,7 @@ import com.contentworkflow.document.application.DocumentPermissionService;
 import com.contentworkflow.document.application.cache.DocumentCacheService;
 import com.contentworkflow.document.application.event.DocumentEventPublisher;
 import com.contentworkflow.document.application.storage.DocumentDeltaStore;
+import com.contentworkflow.document.application.storage.DocumentSnapshotStore;
 import com.contentworkflow.document.infrastructure.persistence.mybatis.CollaborativeDocumentMybatisMapper;
 import com.contentworkflow.document.infrastructure.persistence.mybatis.DocumentCommentMybatisMapper;
 import com.contentworkflow.document.infrastructure.persistence.mybatis.DocumentRevisionMybatisMapper;
@@ -82,6 +83,11 @@ class MergeEngineBeanSelectionTest {
         @Bean
         DocumentDeltaStore documentDeltaStore() {
             return mock(DocumentDeltaStore.class);
+        }
+
+        @Bean
+        DocumentSnapshotStore documentSnapshotStore() {
+            return mock(DocumentSnapshotStore.class);
         }
 
         @Bean

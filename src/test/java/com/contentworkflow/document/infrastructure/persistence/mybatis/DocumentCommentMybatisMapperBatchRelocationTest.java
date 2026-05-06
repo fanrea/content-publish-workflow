@@ -2,6 +2,11 @@ package com.contentworkflow.document.infrastructure.persistence.mybatis;
 
 import com.contentworkflow.document.domain.enums.DocumentCommentStatus;
 import com.contentworkflow.document.application.cache.DocumentCacheService;
+import com.contentworkflow.document.application.engine.DocumentActorCollaborationEngine;
+import com.contentworkflow.document.application.storage.DocumentDeltaStore;
+import com.contentworkflow.document.application.storage.DocumentSnapshotStore;
+import com.contentworkflow.document.application.realtime.DocumentRealtimeRedisIndex;
+import com.contentworkflow.document.application.realtime.DocumentRealtimeRecentUpdateCache;
 import com.contentworkflow.document.infrastructure.persistence.entity.DocumentCommentEntity;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -26,6 +31,16 @@ class DocumentCommentMybatisMapperBatchRelocationTest {
 
     @MockBean
     private DocumentCacheService documentCacheService;
+    @MockBean
+    private DocumentDeltaStore documentDeltaStore;
+    @MockBean
+    private DocumentSnapshotStore documentSnapshotStore;
+    @MockBean
+    private DocumentRealtimeRecentUpdateCache documentRealtimeRecentUpdateCache;
+    @MockBean
+    private DocumentRealtimeRedisIndex documentRealtimeRedisIndex;
+    @MockBean
+    private DocumentActorCollaborationEngine documentActorCollaborationEngine;
 
     @Autowired
     private DocumentCommentMybatisMapper mapper;

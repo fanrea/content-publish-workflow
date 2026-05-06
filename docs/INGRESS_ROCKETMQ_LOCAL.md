@@ -1,29 +1,27 @@
 # Ingress RocketMQ Local Guide
 
-本指南只覆盖文档编辑入口流（`workflow.ingress.rocketmq.*`）的本地联调，不涉及业务代码改动。
+本指南覆盖 `workflow.ingress.rocketmq.*` 本地联调，聚焦协同写入主链路。
 
-## 1. 启动依赖
+## 1. 主链路口径
 
-先启动 MySQL / Redis：
+当前默认叙述：
+
+- RocketMQ ingress 是协同写入主链路。
+- ACK 代表入口接收，不代表全局生效。
+- `OP_APPLIED` 代表进入服务端顺序并生效。
+
+非主链路说明：
+
+- RabbitMQ/outbox 不是当前仓库默认主链路，不作为默认架构口径。
+
+## 2. 启动依赖
 
 ```bash
 docker compose -f compose.local.yml up -d mysql redis
-```
-
-再启动 RocketMQ（`namesrv` + `broker`）：
-
-```bash
 docker compose -f compose.local.yml --profile rocketmq up -d rocketmq-namesrv rocketmq-broker
 ```
 
-## 2. 启用 ingress 配置
-
-`application.yml` 默认值：
-
-- `workflow.ingress.rocketmq.enabled=false`
-- `workflow.ingress.rocketmq.name-server=127.0.0.1:9876`（可覆盖）
-
-本地会话启用方式（PowerShell）：
+## 3. 启动应用
 
 ```powershell
 $env:DOC_INGRESS_ROCKETMQ_ENABLED="true"
@@ -31,21 +29,18 @@ $env:INGRESS_ROCKETMQ_NAME_SERVER="127.0.0.1:9876"
 mvn spring-boot:run
 ```
 
-## 3. 最小验证
+## 4. 最小验证
 
-1. 应用启动日志中不应出现以下报错：
-   - `workflow.ingress.rocketmq.name-server must be configured...`
-2. 建立 WS 会话并发送 `EDIT_OP` 后，应用日志应出现 ingress 发布/消费相关日志。
-3. 可选：查看 RocketMQ 容器日志确认 broker 与 namesrv 已连接。
+1. WS 发送 `EDIT_OP`，应先收到 `ACK(accepted_by_ingress)`。
+2. 消费成功后应收到 `OP_APPLIED(revision=...)`。
+3. 使用落后 `baseRevision` 发送 `SYNC_OPS`，应收到 `SYNC_DONE(latestRevision=...)`。
 
-## 4. 关闭与清理
+## 5. 故障补偿说明
 
-```bash
-docker compose -f compose.local.yml --profile rocketmq down
-```
+推荐面试/项目讲解口径：
 
-如需连数据卷一起删除：
+- RocketMQ 顺序消息
+- DB 唯一键幂等（`documentId + sessionId + clientSeq`）
+- operation log 可重放补偿（`SYNC_OPS`）
 
-```bash
-docker compose -f compose.local.yml --profile rocketmq down -v
-```
+这也是当前实现方向，不依赖 RabbitMQ/outbox 作为核心路径。

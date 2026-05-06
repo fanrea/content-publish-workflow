@@ -8,11 +8,15 @@ import com.contentworkflow.document.application.DocumentPermissionService;
 import com.contentworkflow.document.application.realtime.DocumentOperationService;
 import com.contentworkflow.document.application.realtime.DocumentRealtimePushService;
 import com.contentworkflow.document.domain.entity.CollaborativeDocument;
+import com.contentworkflow.document.domain.entity.DocumentOperation;
 import com.contentworkflow.document.domain.entity.DocumentRevision;
 import com.contentworkflow.document.domain.enums.DocumentChangeType;
+import com.contentworkflow.document.domain.enums.DocumentOpType;
+import com.contentworkflow.document.interfaces.dto.ApplyDocumentOperationRequest;
 import com.contentworkflow.document.interfaces.dto.RestoreDocumentRevisionRequest;
 import com.contentworkflow.document.interfaces.dto.UpdateDocumentRequest;
 import com.contentworkflow.document.interfaces.vo.CollaborativeDocumentResponse;
+import com.contentworkflow.document.interfaces.vo.DocumentOperationApplyResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -90,7 +94,7 @@ class DocumentCollaborationControllerTest {
 
         ApiResponse<CollaborativeDocumentResponse> response = controller.updateDocument(
                 10L,
-                new UpdateDocumentRequest(2, "new-title", "new-content", "summary"),
+                new UpdateDocumentRequest(2, null, "new-title", "new-content", "summary"),
                 httpRequest
         );
 
@@ -120,12 +124,114 @@ class DocumentCollaborationControllerTest {
 
         BusinessException exception = assertThrows(BusinessException.class, () -> controller.updateDocument(
                 10L,
-                new UpdateDocumentRequest(2, "new-title", "new-content", "summary"),
+                new UpdateDocumentRequest(2, null, "new-title", "new-content", "summary"),
                 httpRequest
         ));
 
         assertThat(exception.getCode()).isEqualTo("INVALID_ARGUMENT");
         verifyNoInteractions(operationService);
+    }
+
+    @Test
+    void updateDocument_shouldRejectWhenExpectedRevisionAndBaseRevisionMismatch() {
+        MockHttpServletRequest httpRequest = new MockHttpServletRequest();
+        httpRequest.addHeader("X-Editor-Id", "u1");
+        httpRequest.addHeader("X-Editor-Name", "Alice");
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> controller.updateDocument(
+                10L,
+                new UpdateDocumentRequest(3, 2, "new-title", "new-content", "summary"),
+                httpRequest
+        ));
+
+        assertThat(exception.getCode()).isEqualTo("INVALID_ARGUMENT");
+        verifyNoInteractions(operationService);
+    }
+
+    @Test
+    void updateDocument_shouldRejectWhenRevisionMissing() {
+        MockHttpServletRequest httpRequest = new MockHttpServletRequest();
+        httpRequest.addHeader("X-Editor-Id", "u1");
+        httpRequest.addHeader("X-Editor-Name", "Alice");
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> controller.updateDocument(
+                10L,
+                new UpdateDocumentRequest(null, null, "new-title", "new-content", "summary"),
+                httpRequest
+        ));
+
+        assertThat(exception.getCode()).isEqualTo("INVALID_ARGUMENT");
+        verifyNoInteractions(operationService);
+    }
+
+    @Test
+    void applyOperation_shouldRouteToOperationPipeline() {
+        CollaborativeDocument updated = CollaborativeDocument.builder()
+                .id(10L)
+                .version(9L)
+                .docNo("DOC-10")
+                .title("new-title")
+                .content("new-content")
+                .latestRevision(3)
+                .build();
+        DocumentOperation operation = DocumentOperation.builder()
+                .id(200L)
+                .documentId(10L)
+                .revisionNo(3)
+                .baseRevision(2)
+                .clientSeq(9200L)
+                .opType(DocumentOpType.INSERT)
+                .opPosition(1)
+                .opLength(0)
+                .opText("X")
+                .editorId("u1")
+                .editorName("Alice")
+                .build();
+        DocumentRevision revision = DocumentRevision.builder()
+                .id(300L)
+                .documentId(10L)
+                .revisionNo(3)
+                .baseRevision(2)
+                .title("new-title")
+                .content(null)
+                .build();
+        when(operationService.applyOperation(
+                eq(10L),
+                eq(2),
+                eq("client-session-op"),
+                eq(9200L),
+                eq("u1"),
+                eq("Alice"),
+                org.mockito.ArgumentMatchers.any(),
+                eq("new-title"),
+                eq("summary")
+        )).thenReturn(new DocumentOperationService.ApplyResult(false, updated, operation, revision));
+
+        MockHttpServletRequest httpRequest = new MockHttpServletRequest();
+        httpRequest.addHeader("X-Editor-Id", "u1");
+        httpRequest.addHeader("X-Editor-Name", "Alice");
+        httpRequest.addHeader("X-Client-Session-Id", "client-session-op");
+        httpRequest.addHeader("X-Client-Seq", "9200");
+
+        ApiResponse<DocumentOperationApplyResponse> response = controller.applyOperation(
+                10L,
+                new ApplyDocumentOperationRequest(
+                        2,
+                        null,
+                        DocumentOpType.INSERT,
+                        1,
+                        0,
+                        "X",
+                        "new-title",
+                        "summary"
+                ),
+                httpRequest
+        );
+
+        assertThat(response.data()).isNotNull();
+        assertThat(response.data().duplicated()).isFalse();
+        assertThat(response.data().document().latestRevision()).isEqualTo(3);
+        assertThat(response.data().operation().opType()).isEqualTo(DocumentOpType.INSERT);
     }
 
     @Test

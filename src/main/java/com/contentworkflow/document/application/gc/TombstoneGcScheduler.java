@@ -2,6 +2,8 @@ package com.contentworkflow.document.application.gc;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Clock;
@@ -20,6 +22,13 @@ public class TombstoneGcScheduler {
     private final DocumentCompactionTaskPublisher taskPublisher;
     private final Clock clock;
     private final Map<Long, Long> lastPublishedUpperClockByDocument = new ConcurrentHashMap<>();
+
+    @Autowired
+    public TombstoneGcScheduler(WatermarkGcDecider watermarkGcDecider,
+                                ObjectProvider<DocumentCompactionTaskPublisher> taskPublisher) {
+        this(watermarkGcDecider, taskPublisher.getIfAvailable(() -> task -> {
+        }), Clock.systemUTC());
+    }
 
     public TombstoneGcScheduler(WatermarkGcDecider watermarkGcDecider,
                                 DocumentCompactionTaskPublisher taskPublisher) {

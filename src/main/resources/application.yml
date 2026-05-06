@@ -50,8 +50,11 @@ workflow:
         root-dir: ${DOC_SNAPSHOT_FS_ROOT_DIR:./data/snapshots}
   operation-log:
     # Operation delta store backend: mysql | filesystem | noop
-    # Default uses filesystem to keep high-frequency deltas out of MySQL.
-    # `mysql` remains a compatibility fallback only.
+    # Local/dev defaults to filesystem so the operation-log-first migration can be validated
+    # without extra infrastructure. Do not present filesystem as the production storage plan.
+    # Production should use a shardable operation log backend such as MySQL sharding or an
+    # object-storage segment adapter, plus Redis recent ops for reconnect fast paths.
+    # `mysql` remains a compatibility fallback in this codebase.
     # Any other value is treated as misconfiguration and fails startup.
     # To use mysql explicitly, mysql-compat-enabled must be true.
     backend: ${DOC_OPERATION_LOG_BACKEND:filesystem}
@@ -126,6 +129,9 @@ workflow:
       send-timeout-ms: ${INGRESS_ROCKETMQ_SEND_TIMEOUT_MS:1000}
       max-retries: ${INGRESS_ROCKETMQ_MAX_RETRIES:2}
       retry-backoff-ms: ${INGRESS_ROCKETMQ_RETRY_BACKOFF_MS:50}
+      # After this many ordered-consumer retries, persist operation_repair_task and ACK
+      # so one bad edit does not block the whole document queue forever.
+      max-reconsume-times: ${INGRESS_ROCKETMQ_MAX_RECONSUME_TIMES:16}
   event:
     reliable:
       retry-enabled: ${DOC_EVENT_RETRY_ENABLED:true}

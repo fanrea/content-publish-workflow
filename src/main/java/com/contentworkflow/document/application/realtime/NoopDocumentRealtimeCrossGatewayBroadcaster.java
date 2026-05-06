@@ -1,11 +1,11 @@
 package com.contentworkflow.document.application.realtime;
 
 import com.contentworkflow.document.interfaces.ws.DocumentWsEvent;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 @Service
-@ConditionalOnMissingBean(DocumentRealtimeCrossGatewayBroadcaster.class)
+@ConditionalOnProperty(prefix = "workflow.realtime.redis-broadcast", name = "enabled", havingValue = "false", matchIfMissing = true)
 public class NoopDocumentRealtimeCrossGatewayBroadcaster implements DocumentRealtimeCrossGatewayBroadcaster {
 
     @Override

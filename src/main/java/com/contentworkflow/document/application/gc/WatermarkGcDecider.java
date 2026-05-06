@@ -2,6 +2,8 @@ package com.contentworkflow.document.application.gc;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.OptionalLong;
@@ -12,6 +14,11 @@ public class WatermarkGcDecider {
     private static final Logger log = LoggerFactory.getLogger(WatermarkGcDecider.class);
 
     private final CompactionWatermarkProvider watermarkProvider;
+
+    @Autowired
+    public WatermarkGcDecider(ObjectProvider<CompactionWatermarkProvider> watermarkProvider) {
+        this(watermarkProvider.getIfAvailable(() -> documentId -> OptionalLong.empty()));
+    }
 
     public WatermarkGcDecider(CompactionWatermarkProvider watermarkProvider) {
         this.watermarkProvider = watermarkProvider;

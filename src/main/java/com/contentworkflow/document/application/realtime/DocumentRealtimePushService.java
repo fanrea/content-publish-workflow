@@ -14,6 +14,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -43,6 +44,24 @@ public class DocumentRealtimePushService {
     private final ObjectMapper objectMapper;
     private TombstoneGcScheduler tombstoneGcScheduler;
 
+    @Autowired
+    public DocumentRealtimePushService(DocumentRealtimeSessionRegistry sessionRegistry,
+                                       DocumentRealtimeRecentUpdateCache recentUpdateCache,
+                                       DocumentRealtimeCrossGatewayBroadcaster crossGatewayBroadcaster,
+                                       CompactionPolicyEvaluator compactionPolicyEvaluator,
+                                       ObjectProvider<DocumentCompactionTaskPublisher> compactionTaskPublisher,
+                                       ObjectMapper objectMapper) {
+        this(
+                sessionRegistry,
+                recentUpdateCache,
+                crossGatewayBroadcaster,
+                compactionPolicyEvaluator,
+                compactionTaskPublisher.getIfAvailable(() -> task -> {
+                }),
+                objectMapper
+        );
+    }
+
     public DocumentRealtimePushService(DocumentRealtimeSessionRegistry sessionRegistry,
                                        DocumentRealtimeRecentUpdateCache recentUpdateCache,
                                        DocumentRealtimeCrossGatewayBroadcaster crossGatewayBroadcaster,
@@ -53,7 +72,8 @@ public class DocumentRealtimePushService {
         this.recentUpdateCache = recentUpdateCache;
         this.crossGatewayBroadcaster = crossGatewayBroadcaster;
         this.compactionPolicyEvaluator = compactionPolicyEvaluator;
-        this.compactionTaskPublisher = compactionTaskPublisher;
+        this.compactionTaskPublisher = compactionTaskPublisher == null ? task -> {
+        } : compactionTaskPublisher;
         this.objectMapper = objectMapper;
     }
 

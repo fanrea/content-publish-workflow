@@ -2,6 +2,7 @@ package com.contentworkflow.document.application.gc;
 
 import com.contentworkflow.document.domain.entity.DocumentOperation;
 import com.contentworkflow.document.domain.enums.DocumentOpType;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -28,6 +29,7 @@ public class CompactionPolicyEvaluator {
     private final Clock clock;
     private final ConcurrentMap<Long, DocumentCompactionStats> statsByDocument = new ConcurrentHashMap<>();
 
+    @Autowired
     public CompactionPolicyEvaluator(
             @Value("${workflow.gc.compaction.update-count-threshold:200}") int updateCountThreshold,
             @Value("${workflow.gc.compaction.growth-ratio-threshold:1.5}") double growthRatioThreshold,

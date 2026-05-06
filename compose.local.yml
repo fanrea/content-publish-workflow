@@ -40,9 +40,14 @@ services:
       retries: 12
 
   rabbitmq:
+    # Historical compatibility service for old reliable-event/outbox experiments.
+    # The collaborative editing main path uses RocketMQ ingress; start this only when
+    # explicitly validating legacy RabbitMQ material.
     image: rabbitmq:3.13-management
     container_name: cpw-rabbitmq
     restart: unless-stopped
+    profiles:
+      - legacy-rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: cpw
       RABBITMQ_DEFAULT_PASS: cpw

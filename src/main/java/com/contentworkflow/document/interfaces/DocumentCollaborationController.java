@@ -17,6 +17,7 @@ import com.contentworkflow.document.domain.enums.DocumentChangeType;
 import com.contentworkflow.document.interfaces.dto.CreateDocumentCommentReplyRequest;
 import com.contentworkflow.document.interfaces.dto.CreateDocumentCommentRequest;
 import com.contentworkflow.document.interfaces.dto.CreateDocumentRequest;
+import com.contentworkflow.document.interfaces.dto.ApplyDocumentOperationRequest;
 import com.contentworkflow.document.interfaces.dto.RestoreDocumentRevisionRequest;
 import com.contentworkflow.document.interfaces.dto.UpdateDocumentRequest;
 import com.contentworkflow.document.interfaces.dto.UpsertDocumentMemberRequest;
@@ -25,8 +26,10 @@ import com.contentworkflow.document.interfaces.vo.DocumentCommentReplyResponse;
 import com.contentworkflow.document.interfaces.vo.DocumentCommentResponse;
 import com.contentworkflow.document.interfaces.vo.DocumentCommentSummaryResponse;
 import com.contentworkflow.document.interfaces.vo.DocumentMemberResponse;
+import com.contentworkflow.document.interfaces.vo.DocumentOperationApplyResponse;
 import com.contentworkflow.document.interfaces.vo.DocumentOperationResponse;
 import com.contentworkflow.document.interfaces.vo.DocumentRevisionResponse;
+import com.contentworkflow.document.interfaces.ws.DocumentWsOperation;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
@@ -108,13 +111,20 @@ public class DocumentCollaborationController {
     public ApiResponse<CollaborativeDocumentResponse> updateDocument(@PathVariable @Min(1) Long documentId,
                                                                      @RequestBody @Valid UpdateDocumentRequest request,
                                                                      HttpServletRequest httpRequest) {
+        Integer expectedRevision = resolveExpectedRevision(
+                request.expectedRevision(),
+                request.baseRevision(),
+                "expectedRevision/baseRevision is required for PUT full replace"
+        );
         String editorId = readEditorId(httpRequest);
         String editorName = readEditorName(httpRequest);
+        // HTTP full replace remains a compatibility entry. For large documents we should submit diff operations
+        // (INSERT/DELETE/REPLACE batches) from client to reduce conflict scope and payload size.
         DocumentOperationService.ApplyResult result = operationService.applyFullReplaceOperation(
                 documentId,
-                request.baseRevision(),
+                expectedRevision,
                 resolveClientSessionId(httpRequest, documentId, editorId),
-                resolveClientSeq(httpRequest, documentId, editorId, request),
+                resolveClientSeq(httpRequest, documentId, editorId, expectedRevision, request),
                 editorId,
                 editorName,
                 request.title(),
@@ -122,6 +132,37 @@ public class DocumentCollaborationController {
                 request.changeSummary()
         );
         return ApiResponse.ok(toResponse(result.document()));
+    }
+
+    @PostMapping("/{documentId}/operations")
+    public ApiResponse<DocumentOperationApplyResponse> applyOperation(@PathVariable @Min(1) Long documentId,
+                                                                      @RequestBody @Valid ApplyDocumentOperationRequest request,
+                                                                      HttpServletRequest httpRequest) {
+        Integer expectedRevision = resolveExpectedRevision(
+                request.expectedRevision(),
+                request.baseRevision(),
+                "expectedRevision/baseRevision is required for operation apply"
+        );
+        String editorId = readEditorId(httpRequest);
+        String editorName = readEditorName(httpRequest);
+        DocumentWsOperation op = toWsOperation(request);
+        DocumentOperationService.ApplyResult result = operationService.applyOperation(
+                documentId,
+                expectedRevision,
+                resolveClientSessionId(httpRequest, documentId, editorId),
+                resolveClientSeq(httpRequest, documentId, editorId, expectedRevision, op, request.title(), request.changeSummary()),
+                editorId,
+                editorName,
+                op,
+                request.title(),
+                request.changeSummary()
+        );
+        return ApiResponse.ok(new DocumentOperationApplyResponse(
+                result.duplicated(),
+                toResponse(result.document()),
+                result.operation() == null ? null : toResponse(result.operation()),
+                result.revision() == null ? null : toResponse(result.revision())
+        ));
     }
 
     @GetMapping("/{documentId}/revisions")
@@ -451,6 +492,7 @@ public class DocumentCollaborationController {
     private Long resolveClientSeq(HttpServletRequest request,
                                   Long documentId,
                                   String editorId,
+                                  Integer expectedRevision,
                                   UpdateDocumentRequest payload) {
         Long fromHeader = parseClientSeqHeader(request);
         if (fromHeader != null) {
@@ -458,10 +500,33 @@ public class DocumentCollaborationController {
         }
         String fingerprint = documentId + "|"
                 + editorId + "|"
-                + payload.baseRevision() + "|"
+                + expectedRevision + "|"
                 + payload.title() + "|"
                 + payload.content() + "|"
                 + (payload.changeSummary() == null ? "" : payload.changeSummary());
+        return buildIdempotencySeqFromFingerprint(fingerprint);
+    }
+
+    private Long resolveClientSeq(HttpServletRequest request,
+                                  Long documentId,
+                                  String editorId,
+                                  Integer expectedRevision,
+                                  DocumentWsOperation op,
+                                  String title,
+                                  String changeSummary) {
+        Long fromHeader = parseClientSeqHeader(request);
+        if (fromHeader != null) {
+            return fromHeader;
+        }
+        String fingerprint = documentId + "|"
+                + editorId + "|op|"
+                + expectedRevision + "|"
+                + op.getOpType() + "|"
+                + safeInt(op.getPosition()) + "|"
+                + safeInt(op.getLength()) + "|"
+                + safeString(op.getText()) + "|"
+                + safeString(title) + "|"
+                + safeString(changeSummary);
         return buildIdempotencySeqFromFingerprint(fingerprint);
     }
 
@@ -497,10 +562,56 @@ public class DocumentCollaborationController {
         }
     }
 
+    private Integer resolveExpectedRevision(Integer expectedRevision, Integer baseRevision, String missingMessage) {
+        Integer resolved = expectedRevision != null ? expectedRevision : baseRevision;
+        if (resolved == null) {
+            throw new BusinessException("INVALID_ARGUMENT", missingMessage);
+        }
+        if (resolved <= 0) {
+            throw new BusinessException("INVALID_ARGUMENT", "expectedRevision/baseRevision must be >= 1");
+        }
+        if (expectedRevision != null && baseRevision != null && !expectedRevision.equals(baseRevision)) {
+            throw new BusinessException(
+                    "INVALID_ARGUMENT",
+                    "expectedRevision and baseRevision must be equal when both are provided"
+            );
+        }
+        return resolved;
+    }
+
+    private DocumentWsOperation toWsOperation(ApplyDocumentOperationRequest request) {
+        int position = safeNonNegative(request.position(), "position must be >= 0");
+        int length = safeNonNegative(request.length(), "length must be >= 0");
+        DocumentWsOperation op = new DocumentWsOperation();
+        op.setOpType(request.opType());
+        op.setPosition(position);
+        op.setLength(length);
+        op.setText(request.text());
+        return op;
+    }
+
     private long buildIdempotencySeqFromFingerprint(String fingerprint) {
         long fallback = UUID.nameUUIDFromBytes(fingerprint.getBytes(StandardCharsets.UTF_8)).getMostSignificantBits()
                 & Long.MAX_VALUE;
         return fallback == 0L ? 1L : fallback;
+    }
+
+    private int safeNonNegative(Integer value, String message) {
+        if (value == null) {
+            return 0;
+        }
+        if (value < 0) {
+            throw new BusinessException("INVALID_ARGUMENT", message);
+        }
+        return value;
+    }
+
+    private int safeInt(Integer value) {
+        return value == null ? 0 : value;
+    }
+
+    private String safeString(String value) {
+        return value == null ? "" : value;
     }
 
     private String resolveRestoreSummary(RestoreDocumentRevisionRequest request) {

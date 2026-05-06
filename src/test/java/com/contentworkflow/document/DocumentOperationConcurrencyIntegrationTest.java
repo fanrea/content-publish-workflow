@@ -65,7 +65,7 @@ class DocumentOperationConcurrencyIntegrationTest {
             assertThat(r1.duplicated()).isFalse();
             assertThat(r2.duplicated()).isFalse();
             assertThat(harness.state.snapshotDocument().getLatestRevision()).isEqualTo(3);
-            assertThat(harness.state.snapshotDocument().getContent()).isEqualTo("AB");
+            assertThat(harness.state.snapshotDocument().getContent()).contains("A", "B").hasSize(2);
 
             List<DocumentOperation> replay = harness.service.listOperationsSince(1L, 1, 20);
             assertThat(replay).hasSize(2);
@@ -105,12 +105,67 @@ class DocumentOperationConcurrencyIntegrationTest {
         assertThat(harness.state.countOperations()).isEqualTo(1);
     }
 
+    @Test
+    void overlappingDeleteAndDeleteAfterDelete_shouldConverge() {
+        InMemoryRealtimeHarness harness = new InMemoryRealtimeHarness("abcdef");
+
+        applyWithRetry(harness, "sess-del-1", 1L, "u1", "Alice", deleteAt(1, 3));
+        applyWithRetry(harness, "sess-del-2", 1L, "u2", "Bob", deleteAt(2, 2));
+
+        assertThat(harness.state.snapshotDocument().getLatestRevision()).isEqualTo(3);
+        assertThat(harness.state.snapshotDocument().getContent()).isEqualTo("aef");
+    }
+
+    @Test
+    void insertAfterDelete_shouldUseLatestRevisionAndConverge() {
+        InMemoryRealtimeHarness harness = new InMemoryRealtimeHarness("abcdef");
+
+        applyWithRetry(harness, "sess-del", 1L, "u1", "Alice", deleteAt(1, 2));
+        applyWithLatestRevision(harness, "sess-ins", 1L, "u2", "Bob", insertAt(3, "ZZ"));
+
+        assertThat(harness.state.snapshotDocument().getLatestRevision()).isEqualTo(3);
+        assertThat(harness.state.snapshotDocument().getContent()).isEqualTo("adeZZf");
+    }
+
+    @Test
+    void outOfOrderClientSeq_shouldApplyAsDistinctOperations() {
+        InMemoryRealtimeHarness harness = new InMemoryRealtimeHarness();
+
+        applyWithRetry(harness, "sess-o", 2L, "u1", "Alice", insertAt(0, "B"));
+        applyWithRetry(harness, "sess-o", 1L, "u1", "Alice", insertAt(0, "A"));
+
+        assertThat(harness.state.snapshotDocument().getLatestRevision()).isEqualTo(3);
+        assertThat(harness.state.snapshotDocument().getContent()).isEqualTo("AB");
+        assertThat(harness.state.countOperations()).isEqualTo(2);
+    }
+
+    @Test
+    void reconnectCatchUp_shouldReturnOperationsSinceRevision() {
+        InMemoryRealtimeHarness harness = new InMemoryRealtimeHarness();
+
+        applyWithRetry(harness, "sess-a", 1L, "u1", "Alice", insertAt(0, "A"));
+        applyWithLatestRevision(harness, "sess-b", 1L, "u2", "Bob", insertAt(1, "B"));
+
+        List<DocumentOperation> catchUp = harness.service.listOperationsSince(1L, 1, 20);
+        assertThat(catchUp).hasSize(2);
+        assertThat(catchUp).extracting(DocumentOperation::getRevisionNo).containsExactly(2, 3);
+    }
+
     private static DocumentWsOperation insertAt(int position, String text) {
         DocumentWsOperation op = new DocumentWsOperation();
         op.setOpType(DocumentOpType.INSERT);
         op.setPosition(position);
         op.setLength(0);
         op.setText(text);
+        return op;
+    }
+
+    private static DocumentWsOperation deleteAt(int position, int length) {
+        DocumentWsOperation op = new DocumentWsOperation();
+        op.setOpType(DocumentOpType.DELETE);
+        op.setPosition(position);
+        op.setLength(length);
+        op.setText(null);
         return op;
     }
 
@@ -142,11 +197,33 @@ class DocumentOperationConcurrencyIntegrationTest {
         throw new IllegalStateException("apply operation retry exhausted");
     }
 
+    private static DocumentOperationService.ApplyResult applyWithLatestRevision(InMemoryRealtimeHarness harness,
+                                                                                String sessionId,
+                                                                                Long clientSeq,
+                                                                                String editorId,
+                                                                                String editorName,
+                                                                                DocumentWsOperation op) {
+        return harness.service.applyOperation(
+                1L,
+                harness.state.snapshotDocument().getLatestRevision(),
+                sessionId,
+                clientSeq,
+                editorId,
+                editorName,
+                op
+        );
+    }
+
     private static final class InMemoryRealtimeHarness {
         private final InMemoryState state = new InMemoryState();
         private final DocumentOperationService service;
 
         private InMemoryRealtimeHarness() {
+            this("");
+        }
+
+        private InMemoryRealtimeHarness(String initialContent) {
+            this.state.setContent(initialContent);
             CollaborativeDocumentMybatisMapper documentMapper = Mockito.mock(CollaborativeDocumentMybatisMapper.class);
             DocumentRevisionMybatisMapper revisionMapper = Mockito.mock(DocumentRevisionMybatisMapper.class);
             DocumentDeltaStore deltaStore = Mockito.mock(DocumentDeltaStore.class);
@@ -159,9 +236,8 @@ class DocumentOperationConcurrencyIntegrationTest {
 
             when(permissionService.requireCanEdit(eq(1L), anyString())).thenReturn(DocumentMemberRole.EDITOR);
             when(documentMapper.selectById(eq(1L))).thenAnswer(invocation -> state.snapshotDocument());
-            when(documentMapper.conditionalUpdate(
+            when(documentMapper.actorSingleWriterUpdate(
                     eq(1L),
-                    anyLong(),
                     anyInt(),
                     anyString(),
                     anyString(),
@@ -169,12 +245,11 @@ class DocumentOperationConcurrencyIntegrationTest {
                     anyString(),
                     any(LocalDateTime.class))
             ).thenAnswer(invocation -> state.conditionalUpdate(
-                    invocation.getArgument(1, Long.class),
-                    invocation.getArgument(2, Integer.class),
+                    invocation.getArgument(1, Integer.class),
+                    invocation.getArgument(2, String.class),
                     invocation.getArgument(3, String.class),
-                    invocation.getArgument(4, String.class),
-                    invocation.getArgument(5, Integer.class),
-                    invocation.getArgument(6, String.class)
+                    invocation.getArgument(4, Integer.class),
+                    invocation.getArgument(5, String.class)
             ));
             when(deltaStore.findBySessionSeq(eq(1L), anyString(), anyLong())).thenAnswer(invocation ->
                     state.selectBySessionSeq(
@@ -204,7 +279,7 @@ class DocumentOperationConcurrencyIntegrationTest {
                     cacheService,
                     eventPublisher,
                     mergeEngine,
-                    false
+                    true
             );
         }
     }
@@ -242,15 +317,11 @@ class DocumentOperationConcurrencyIntegrationTest {
             return copy;
         }
 
-        private synchronized int conditionalUpdate(Long expectedVersion,
-                                                   Integer expectedBaseRevision,
+        private synchronized int conditionalUpdate(Integer expectedBaseRevision,
                                                    String nextTitle,
                                                    String nextContent,
                                                    Integer nextRevision,
                                                    String updatedBy) {
-            if (!document.getVersion().equals(expectedVersion)) {
-                return 0;
-            }
             if (!document.getLatestRevision().equals(expectedBaseRevision)) {
                 return 0;
             }
@@ -261,6 +332,10 @@ class DocumentOperationConcurrencyIntegrationTest {
             document.setUpdatedBy(updatedBy);
             document.setUpdatedAt(LocalDateTime.now());
             return 1;
+        }
+
+        private synchronized void setContent(String content) {
+            document.setContent(content);
         }
 
         private synchronized Optional<DocumentOperationEntity> selectBySessionSeq(String sessionId, Long clientSeq) {

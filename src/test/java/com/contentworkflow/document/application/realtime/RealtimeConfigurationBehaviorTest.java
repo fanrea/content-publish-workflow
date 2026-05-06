@@ -8,6 +8,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
@@ -53,10 +55,6 @@ class RealtimeConfigurationBehaviorTest {
     }
 
     @Configuration
-    @Import({
-            RedisDocumentRealtimeRedisIndex.class,
-            RedisDocumentRealtimeRecentUpdateCache.class
-    })
     static class RedisConfig {
 
         @Bean
@@ -67,6 +65,23 @@ class RealtimeConfigurationBehaviorTest {
         @Bean
         ObjectMapper objectMapper() {
             return new ObjectMapper().findAndRegisterModules();
+        }
+
+        @Bean
+        DocumentRealtimeRedisIndex documentRealtimeRedisIndex(StringRedisTemplate stringRedisTemplate) {
+            return new RedisDocumentRealtimeRedisIndex(stringRedisTemplate, "gw-test");
+        }
+
+        @Bean
+        DocumentRealtimeRecentUpdateCache documentRealtimeRecentUpdateCache(StringRedisTemplate stringRedisTemplate,
+                                                                            ObjectMapper objectMapper) {
+            return new RedisDocumentRealtimeRecentUpdateCache(
+                    stringRedisTemplate,
+                    objectMapper,
+                    50,
+                    Duration.ofSeconds(60),
+                    true
+            );
         }
     }
 }
