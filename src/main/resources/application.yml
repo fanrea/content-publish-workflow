@@ -41,19 +41,25 @@ mybatis-plus:
 
 workflow:
   storage:
+    # Production readiness gate for storage backends.
+    # false (default): local/dev adapters are allowed.
+    # true: startup fails when operation-log/snapshot backend is filesystem or noop.
+    production-mode: ${DOC_STORAGE_PRODUCTION_MODE:false}
     snapshot:
       # Snapshot backend: noop | filesystem
-      # filesystem is a local object-storage compatible adapter for stage migration.
-      # Default uses filesystem (object-storage adapter). `noop` is for local troubleshooting only.
+      # filesystem is a local object-storage compatible adapter for local/dev and migration rehearsal.
+      # `noop` is for local troubleshooting only.
+      # Production should use OSS/MinIO snapshot backend (to be provided by dedicated adapter).
       backend: ${DOC_SNAPSHOT_BACKEND:filesystem}
       filesystem:
         root-dir: ${DOC_SNAPSHOT_FS_ROOT_DIR:./data/snapshots}
   operation-log:
     # Operation delta store backend: mysql | filesystem | noop
     # Local/dev defaults to filesystem so the operation-log-first migration can be validated
-    # without extra infrastructure. Do not present filesystem as the production storage plan.
+    # without extra infrastructure.
     # Production should use a shardable operation log backend such as MySQL sharding or an
-    # object-storage segment adapter, plus Redis recent ops for reconnect fast paths.
+    # object-storage segment adapter, plus RocketMQ ordered ingress and Redis recent ops.
+    # Enable workflow.storage.production-mode=true in production to block filesystem/noop.
     # `mysql` remains a compatibility fallback in this codebase.
     # Any other value is treated as misconfiguration and fails startup.
     # To use mysql explicitly, mysql-compat-enabled must be true.

@@ -141,11 +141,10 @@ public interface DocumentCommentMybatisMapper extends BaseMapper<DocumentComment
     }
 
     /**
-     * 批量迁移 OPEN 评论锚点（INSERT）。
-     * 语义与 OT-lite 保持一致：
-     * 1) pos <= start: start/end 同步右移；
-     * 2) start < pos < end: 仅 end 右移；
-     * 3) 其余不变。
+     * Batch relocate OPEN comment anchors for INSERT using server-ordered position projection:
+     * 1) pos <= start: shift start/end to the right.
+     * 2) start < pos < end: shift end to the right.
+     * 3) otherwise unchanged.
      */
     default int batchRelocateOpenAnchorsForInsert(Long documentId, Integer operationPosition, Integer insertedLength) {
         int pos = operationPosition == null ? 0 : Math.max(0, operationPosition);
@@ -176,8 +175,8 @@ public interface DocumentCommentMybatisMapper extends BaseMapper<DocumentComment
     }
 
     /**
-     * 批量迁移 OPEN 评论锚点（DELETE）。
-     * 语义与 OT-lite 保持一致：点位按删除区间投影，最终 end >= start。
+     * Batch relocate OPEN comment anchors for DELETE.
+     * Anchor points are projected by delete interval and normalized to keep end >= start.
      */
     default int batchRelocateOpenAnchorsForDelete(Long documentId, Integer operationPosition, Integer deletedLength) {
         int deleteStart = operationPosition == null ? 0 : Math.max(0, operationPosition);
@@ -201,7 +200,7 @@ public interface DocumentCommentMybatisMapper extends BaseMapper<DocumentComment
     }
 
     /**
-     * 批量迁移 OPEN 评论锚点（REPLACE = DELETE + INSERT）。
+     * Batch relocate OPEN comment anchors for REPLACE (DELETE + INSERT) in server order.
      */
     default int batchRelocateOpenAnchorsForReplace(Long documentId,
                                                    Integer operationPosition,

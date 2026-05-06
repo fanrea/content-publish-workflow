@@ -309,6 +309,65 @@ class DocumentCollaborationServiceTest {
         assertThat(revision.getContent()).isEqualTo("abcd");
     }
 
+    @Test
+    void getDocument_shouldMaterializeLatestContentFromSnapshotAndOperationLogWhenTableContentIsStale() {
+        CollaborativeDocumentEntity staleDocument = buildDocument(1L, 4L, "title", "stale-content", 3);
+        staleDocument.setLatestSnapshotRef("snapshot/1/1.bin");
+        staleDocument.setLatestSnapshotRevision(1);
+
+        DocumentRevisionEntity revision2 = new DocumentRevisionEntity();
+        revision2.setDocumentId(1L);
+        revision2.setRevisionNo(2);
+        DocumentRevisionEntity revision3 = new DocumentRevisionEntity();
+        revision3.setDocumentId(1L);
+        revision3.setRevisionNo(3);
+
+        DocumentOperationEntity op2 = new DocumentOperationEntity();
+        op2.setDocumentId(1L);
+        op2.setRevisionNo(2);
+        op2.setOpType(DocumentOpType.INSERT);
+        op2.setOpPosition(3);
+        op2.setOpLength(0);
+        op2.setOpText("d");
+
+        DocumentOperationEntity op3 = new DocumentOperationEntity();
+        op3.setDocumentId(1L);
+        op3.setRevisionNo(3);
+        op3.setOpType(DocumentOpType.REPLACE);
+        op3.setOpPosition(1);
+        op3.setOpLength(2);
+        op3.setOpText("XY");
+
+        CrdtSnapshotCodec codec = new CrdtSnapshotCodec();
+        when(cacheService.get(1L)).thenReturn(null);
+        when(documentMapper.selectById(1L)).thenReturn(staleDocument);
+        when(snapshotStore.get("snapshot/1/1.bin")).thenReturn(Optional.of(codec.encodeText("abc")));
+        when(revisionMapper.selectByRevisionRangeAsc(1L, 1, 3, 2)).thenReturn(List.of(revision2, revision3));
+        when(deltaStore.findByRevision(1L, 2)).thenReturn(Optional.of(op2));
+        when(deltaStore.findByRevision(1L, 3)).thenReturn(Optional.of(op3));
+
+        assertThat(service.getDocument(1L).getContent()).isEqualTo("aXYd");
+    }
+
+    @Test
+    void getDocument_shouldFallbackToTableContentWhenReplayDataIsIncomplete() {
+        CollaborativeDocumentEntity staleDocument = buildDocument(1L, 4L, "title", "stale-content", 3);
+        staleDocument.setLatestSnapshotRef("snapshot/1/1.bin");
+        staleDocument.setLatestSnapshotRevision(1);
+
+        DocumentRevisionEntity revision2 = new DocumentRevisionEntity();
+        revision2.setDocumentId(1L);
+        revision2.setRevisionNo(2);
+
+        CrdtSnapshotCodec codec = new CrdtSnapshotCodec();
+        when(cacheService.get(1L)).thenReturn(null);
+        when(documentMapper.selectById(1L)).thenReturn(staleDocument);
+        when(snapshotStore.get("snapshot/1/1.bin")).thenReturn(Optional.of(codec.encodeText("abc")));
+        when(revisionMapper.selectByRevisionRangeAsc(1L, 1, 3, 2)).thenReturn(List.of(revision2));
+
+        assertThat(service.getDocument(1L).getContent()).isEqualTo("stale-content");
+    }
+
     private CollaborativeDocumentEntity buildDocument(Long id,
                                                       Long version,
                                                       String title,

@@ -30,7 +30,17 @@ public class DocumentWsMessage {
     private Long clientSeq;
     private String clientSessionId;
     private String deltaBatchId;
+    /**
+     * Optional client clock metadata.
+     * Used for server-side ordering/watermark hints and replay diagnostics only.
+     * Not an independent client-side convergence basis.
+     */
     private Long clientClock;
+    /**
+     * Optional base vector metadata.
+     * Used for server-side compensation diagnostics and context hints only.
+     * Not the source of merge convergence authority.
+     */
     private Map<String, Long> baseVector;
     /**
      * 编辑人标识。

@@ -120,7 +120,9 @@ public class DocumentCollaborationService {
     @Transactional(readOnly = true)
     public List<CollaborativeDocument> listDocuments(int limit) {
         int normalizedLimit = Math.max(1, Math.min(limit <= 0 ? 20 : limit, MAX_LIST_LIMIT));
-        return documentMapper.selectLatest(normalizedLimit).stream().map(this::toDocument).toList();
+        return documentMapper.selectLatest(normalizedLimit).stream()
+                .map(this::toDocumentForRead)
+                .toList();
     }
 
     @Transactional(readOnly = true)
@@ -129,7 +131,7 @@ public class DocumentCollaborationService {
         int normalizedLimit = Math.max(1, Math.min(limit <= 0 ? 20 : limit, MAX_LIST_LIMIT));
         return documentMapper.selectLatestByMember(normalizedMemberId, normalizedLimit)
                 .stream()
-                .map(this::toDocument)
+                .map(this::toDocumentForRead)
                 .toList();
     }
 
@@ -140,14 +142,16 @@ public class DocumentCollaborationService {
         }
         CollaborativeDocumentEntity cached = cacheService.get(documentId);
         if (cached != null) {
-            return toDocument(cached);
+            return toDocumentForRead(cached);
         }
         CollaborativeDocumentEntity entity = requireDocument(documentId);
         cacheService.put(entity);
-        return toDocument(entity);
+        return toDocumentForRead(entity);
     }
 
     @Transactional
+    // Legacy compatibility entrypoint for full-content edits (low-frequency path).
+    // Realtime/operation-log-first write path should remain the primary authority.
     public DocumentEditResult editDocument(Long documentId,
                                            Integer baseRevision,
                                            String title,
@@ -320,14 +324,22 @@ public class DocumentCollaborationService {
         return member;
     }
 
+    private CollaborativeDocument toDocumentForRead(CollaborativeDocumentEntity entity) {
+        return toDocument(entity, materializeCurrentDocumentContentBestEffort(entity));
+    }
+
     private CollaborativeDocument toDocument(CollaborativeDocumentEntity entity) {
+        return toDocument(entity, entity.getContent());
+    }
+
+    private CollaborativeDocument toDocument(CollaborativeDocumentEntity entity, String resolvedContent) {
         return CollaborativeDocument.builder()
                 .id(entity.getId())
                 .version(entity.getVersion())
                 .docNo(entity.getDocNo())
                 .title(entity.getTitle())
-                // Keep returning table content for compatibility; snapshot reference path is now prepared.
-                .content(entity.getContent())
+                // Compatibility model: table content is fallback; read-path materialization prefers snapshot+operation log.
+                .content(resolvedContent)
                 .latestRevision(entity.getLatestRevision())
                 .latestSnapshotRef(entity.getLatestSnapshotRef())
                 .latestSnapshotRevision(entity.getLatestSnapshotRevision())
@@ -336,6 +348,60 @@ public class DocumentCollaborationService {
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())
                 .build();
+    }
+
+    private String materializeCurrentDocumentContentBestEffort(CollaborativeDocumentEntity current) {
+        String fallback = current.getContent();
+        try {
+            Long documentId = current.getId();
+            Integer latestRevision = current.getLatestRevision();
+            Integer snapshotRevision = current.getLatestSnapshotRevision();
+            String snapshotRef = current.getLatestSnapshotRef();
+            if (documentId == null
+                    || latestRevision == null
+                    || latestRevision <= 0
+                    || snapshotRevision == null
+                    || snapshotRevision <= 0
+                    || snapshotRevision > latestRevision
+                    || snapshotRef == null
+                    || snapshotRef.isBlank()) {
+                return fallback;
+            }
+
+            Optional<String> snapshotPayload = snapshotStore.get(snapshotRef);
+            if (snapshotPayload.isEmpty()) {
+                return fallback;
+            }
+            String rebuilt = decodeSnapshotPayload(snapshotPayload.get());
+            int replayCount = latestRevision - snapshotRevision;
+            if (replayCount <= 0) {
+                return rebuilt;
+            }
+            if (replayCount > MAX_SNAPSHOT_REPLAY_OPS) {
+                return fallback;
+            }
+
+            List<DocumentRevisionEntity> revisionsToReplay = revisionMapper.selectByRevisionRangeAsc(
+                    documentId,
+                    snapshotRevision,
+                    latestRevision,
+                    replayCount
+            );
+            if (revisionsToReplay.size() < replayCount) {
+                return fallback;
+            }
+
+            for (DocumentRevisionEntity replayRevision : revisionsToReplay) {
+                Optional<DocumentOperationEntity> operation = deltaStore.findByRevision(documentId, replayRevision.getRevisionNo());
+                if (operation.isEmpty()) {
+                    return fallback;
+                }
+                rebuilt = applyOperation(rebuilt, operation.get());
+            }
+            return rebuilt;
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
     }
 
     private DocumentRevision toRevision(DocumentRevisionEntity entity) {

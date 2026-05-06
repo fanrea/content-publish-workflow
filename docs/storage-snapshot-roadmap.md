@@ -13,12 +13,19 @@
 - **local/dev**：filesystem operation log adapter 可用，仅用于开发验证。
 - **production**：以 MySQL + RocketMQ + Redis + OSS/MinIO 为基线。
 
+生产启用建议：
+
+- 打开 `workflow.storage.production-mode=true` 作为启动防线。
+- 当 `workflow.operation-log.backend` 或 `workflow.storage.snapshot.backend` 为 `filesystem/noop` 时，启动应失败。
+- 默认 `production-mode=false`，不影响本地开发和现有测试。
+
 生产推荐分工：
 
 1. MySQL：文档元数据、revision 元数据、幂等键状态。
-2. RocketMQ：入口顺序消息与可重放消费链路。
-3. Redis：recent ops 热窗口与弱实时 fanout。
-4. OSS/MinIO：snapshot 与历史分段归档。
+2. MySQL 分表或对象存储分段：operation log 按文档/时间分段，支持 revision 区间回放。
+3. RocketMQ：入口顺序日志与可重放消费链路。
+4. Redis：recent ops 热窗口与弱实时 fanout。
+5. OSS/MinIO：snapshot 与历史分段归档。
 
 ## 3. operation log 落地形态
 

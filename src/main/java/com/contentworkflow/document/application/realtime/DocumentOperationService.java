@@ -1074,8 +1074,11 @@ public class DocumentOperationService {
                 .version(entity.getVersion())
                 .docNo(entity.getDocNo())
                 .title(entity.getTitle())
+                // Compatibility model: table content is display fallback; primary write authority is operation-log-first pipeline.
                 .content(entity.getContent())
                 .latestRevision(entity.getLatestRevision())
+                .latestSnapshotRef(entity.getLatestSnapshotRef())
+                .latestSnapshotRevision(entity.getLatestSnapshotRevision())
                 .createdBy(entity.getCreatedBy())
                 .updatedBy(entity.getUpdatedBy())
                 .createdAt(entity.getCreatedAt())

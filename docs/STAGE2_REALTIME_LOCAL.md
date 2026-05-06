@@ -1,23 +1,24 @@
 # Stage2 Realtime Local Validation
 
-本指南用于本地验证协同闭环：`JOIN -> EDIT_OP -> SYNC_OPS`。
+This guide validates the local collaborative loop:
 
-## 1. 语义前提
+`JOIN -> EDIT_OP -> OP_APPLIED -> SYNC_OPS`
 
-当前模式为 **Server-Ordered CRDT-like Merge Engine**：
+## 1. Semantics to Validate
 
-- `merge mode` 可能配置为 `crdt`，但语义是服务端顺序合并，不是完整端侧 CRDT。
-- `ACK(acceptedAck)` 不等于全局生效。
-- `OP_APPLIED` 才表示进入全局顺序并生效。
+1. `ACK(acceptedAck)` only means ingress accepted.
+2. `OP_APPLIED` means server ordering/merge is complete.
+3. Consistency comes from RocketMQ ordered ingress + server merge + revision/op-log replay.
+4. Client does not independently converge.
 
-## 2. 启动依赖
+## 2. Dependencies
 
 ```bash
 docker compose -f compose.local.yml up -d mysql redis
 docker compose -f compose.local.yml --profile rocketmq up -d rocketmq-namesrv rocketmq-broker
 ```
 
-## 3. 启动应用
+## 3. Run Application
 
 ```powershell
 $env:DOC_INGRESS_ROCKETMQ_ENABLED="true"
@@ -30,32 +31,20 @@ $env:DOC_REALTIME_RECENT_UPDATES_TTL="120s"
 mvn spring-boot:run
 ```
 
-## 4. 验证步骤
+## 4. Validation Steps
 
-1. 创建文档（HTTP），记录 `docId`、`latestRevision`。
-2. 发送 `JOIN`（WS），确认返回 `SNAPSHOT`，并包含 `snapshotRevision/latestRevision`。
-3. 发送 `EDIT_OP`，确认先收到 `ACK(accepted_by_ingress)`，随后收到 `OP_APPLIED`。
-4. 用落后 revision 发送 `SYNC_OPS`，确认收到 0..N 条 `OP_APPLIED`，最后收到 `SYNC_DONE(latestRevision)`。
+1. Create document by HTTP and record `docId/latestRevision`.
+2. Send `JOIN`; verify snapshot context is returned.
+3. Send `EDIT_OP`; verify `ACK` first, then `OP_APPLIED`.
+4. Send `SYNC_OPS` from lagging revision; verify replay and `SYNC_DONE`.
 
-## 5. 状态机校验
+## 5. Metadata Check (`clientClock` / `baseVector`)
 
-客户端状态应可映射为：
+When provided, they should be treated as optional metadata for:
 
-`INIT -> JOINING -> SNAPSHOT_READY -> EDITING -> GAP_DETECTED -> SYNCING -> EDITING`
+- server ordering/watermark hints
+- presence progress
+- compensation diagnostics
 
-建议检查：
+They must not be treated as independent client-side convergence authority.
 
-- `GAP_DETECTED` 触发后必须执行 `SYNC_OPS`。
-- 若返回 `REBASE_REQUIRED` 或 `SNAPSHOT_REQUIRED`，应走 rebase/snapshot 回退，不可直接继续本地写入。
-
-## 6. 回放来源校验
-
-`SYNC_OPS` 服务端查找顺序：
-
-1. Redis recent ops 热窗口。
-2. miss 后 operation log。
-
-因此本地联调可分别验证：
-
-- 热窗口命中：短断线追赶。
-- 热窗口 miss：长断线追赶仍可收敛。
